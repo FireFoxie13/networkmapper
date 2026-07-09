@@ -1,0 +1,15 @@
+maps/
+azure-net-map-*.html
+*.crt
+*.pem
+.azure/
+icons/manifest.json
+scan-under-test.html
+fix-scan.html
+fwlog-scan.html
+hairball-*.html
+stress-scan.html
+route-scan.html
+asg-test.html
+*.png
+__pycache__/
