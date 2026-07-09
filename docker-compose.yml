@@ -1,0 +1,21 @@
+services:
+  netmap:
+    build: .
+    container_name: network-mapper
+    ports:
+      - "127.0.0.1:8080:8080"
+
+    environment:
+      PORT: "8080"
+      WORKSPACE_ID: "d4474842-1228-443b-be6f-3abfed2d9179,3436cb02-2a3c-4080-9291-bf9a2d940b17"
+      FLOW_WINDOW: "24h"
+      # METRICS: "1"
+      # ALL_RESOURCES: "1"
+      # RESCAN_HOURS: "12"
+
+    volumes:
+      - ./maps:/app/maps
+      # - ${HOME}/.azure:/root/.azure
+
+    stdin_open: true
+    tty: true
