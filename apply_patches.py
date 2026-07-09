@@ -2059,6 +2059,78 @@ patch("P70d node-ring health legend",
           <span class="chip"><i style="width:11px;height:11px;border-radius:50%;border:2px solid #C4CCD6;background:none"></i> no signal</span>
         </div>''')
 
+# ==================================================== MAP CLARITY & DECLUTTER
+# P71a: the overview link aggregation copied blockRule/blockGroup but not
+# blockLayer (same bug class P1 fixed for the deps view), so the on-map deny
+# label rendered "blocked at ?" instead of "blocked at Route table / ...".
+patch("P71a carry blockLayer through overview aggregation (fixes 'blocked at ?')",
+'''    if(e.kind==="traffic"){a.total+=e.total||1;if(e.denied)a.denied=true;
+      if(e.blockRule&&!a.blockRule){a.blockRule=e.blockRule;a.blockGroup=e.blockGroup;}
+      for(const r of (e.rows||[]))a.ports.add(":"+r.port);}''',
+'''    if(e.kind==="traffic"){a.total+=e.total||1;if(e.denied)a.denied=true;
+      if(e.blockRule&&!a.blockRule){a.blockRule=e.blockRule;a.blockGroup=e.blockGroup;}
+      if(e.blockLayer&&!a.blockLayer)a.blockLayer=e.blockLayer;
+      for(const r of (e.rows||[]))a.ports.add(":"+r.port);}''')
+
+patch("P71a2 expose blockLayer on the built link",
+'    blockRule:a.blockRule||"", blockGroup:a.blockGroup||"",',
+'    blockRule:a.blockRule||"", blockGroup:a.blockGroup||"", blockLayer:a.blockLayer||"",')
+
+# P71b: the overview drew every port label AND every long "blocked at ..." string
+# on top of the graph at all times, so a busy map turned into a wall of text.
+# Datadog keeps the map clean and reveals detail on hover. Hide both label layers
+# by default and light up only the hovered node's edges. Nothing is lost — the
+# panel and the dependencies view still carry the full text.
+patch("P71b1 port labels hidden until hover",
+'    .attr("text-anchor","middle").attr("opacity",.9);',
+'    .attr("text-anchor","middle").attr("opacity",0);')
+
+patch("P71b2 blocked-at labels hidden until hover",
+'    .attr("text-anchor","middle").attr("opacity",.95);',
+'    .attr("text-anchor","middle").attr("opacity",0);')
+
+patch("P71b3 hover reset also clears both label layers",
+'link.attr("opacity",d=>d.denied?.95:d.kind==="traffic"?.7:.5);lbl.attr("opacity",.9);return;}',
+'link.attr("opacity",d=>d.denied?.95:d.kind==="traffic"?.7:.5);lbl.attr("opacity",0);lbl2.attr("opacity",0);return;}')
+
+patch("P71b4 hover reveals both label layers for the focused node",
+'    lbl.attr("opacity",d=>{const s2=d.source.id||d.source,t2=d.target.id||d.target;return (s2===id||t2===id)?1:.05;});',
+'''    lbl.attr("opacity",d=>{const s2=d.source.id||d.source,t2=d.target.id||d.target;return (s2===id||t2===id)?1:.05;});
+    lbl2.attr("opacity",d=>{const s2=d.source.id||d.source,t2=d.target.id||d.target;return (s2===id||t2===id)?1:0;});''')
+
+# P71c: the three stacked prose paragraphs under the map read as a wall of text.
+# Fold the explanation into one collapsible "How to read this map" disclosure
+# (native <details>, no JS), so the default view stays clean and professional.
+patch("P71c fold map prose into a collapsible",
+'''        <div class="canvasHint" style="border-top:0;padding-top:0;color:var(--faint)">
+          <span><b>Moving dots = flows Azure actually recorded</b>, travelling source → destination. Dot count and line width scale with volume. A plain line means connected in configuration, with nothing recorded flowing.</span>
+          <span><b>Red = denied.</b> A rule said no. Dots stop halfway and the line reads <i>blocked at &lt;policy or NSG&gt; / &lt;rule&gt;</i>.</span>
+          <span><b>Amber = impaired.</b> Nothing denied it, but the path cannot complete: an empty backend pool, a failing health probe, SNAT exhaustion, a peering that never connected, a blackhole route, or a destination that never answered.</span>
+        </div>
+        <div class="canvasHint" style="border-top:0;padding-top:0;color:var(--faint)">
+          <span><b>Numbers:</b> inside a circle = resources in that cluster.</span>
+          <span><b>×N</b> on a line = N separate links collapsed into one.</span>
+          <span>Ports (<b>:53</b>) and flow counts label traffic lines only.</span>
+        </div>''',
+'''        <details class="canvasHint" style="border-top:0;padding-top:0;color:var(--faint);display:block">
+          <summary style="cursor:pointer;color:var(--dim);font-weight:600">How to read this map</summary>
+          <div style="display:flex;flex-direction:column;gap:5px;margin-top:6px;line-height:1.5;max-width:1100px">
+            <span><b>Line width</b> = traffic volume · <b>moving dots</b> show direction, source → destination. A plain line is a configuration link with nothing flowing.</span>
+            <span><b style="color:var(--danger)">Red</b> = a rule denied the flow — hover the edge to see the layer and rule. <b style="color:var(--warn)">Amber</b> = impaired: nothing denied it, but the path can\\'t complete (empty backend pool, failing health probe, SNAT exhaustion, an unconnected peering, a blackhole route, or an endpoint that never answered).</span>
+            <span><b>Number in a circle</b> = resources in that cluster · <b>×N</b> = N links collapsed into one · ports (<b>:443</b>) and flow counts label traffic edges on hover.</span>
+          </div>
+        </details>''')
+
+# P71d: point people at the hover interaction, and drop the now-redundant inline
+# "width = volume · dots = direction" from the traffic chip.
+patch("P71d intro line names the hover interaction",
+'          <span>Scroll to zoom · drag to move · click a node for actions</span>',
+'          <span>Scroll to zoom · drag to pan · click a node for actions · <b style="color:var(--dim)">hover a node to reveal its ports and the rule that blocked it</b></span>')
+
+patch("P71d2 shorten the traffic chip",
+'          <span class="chip"><i style="background:var(--edgeTraffic);height:3px"></i> observed traffic · width = volume · dots = direction</span>',
+'          <span class="chip"><i style="background:var(--edgeTraffic);height:3px"></i> observed traffic</span>')
+
 open(SRC, "w", encoding="utf-8").write(html)
 print(f"OK — {len(applied)} patch(es) applied:")
 for a in applied:
