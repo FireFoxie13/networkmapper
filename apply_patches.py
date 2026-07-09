@@ -2015,6 +2015,50 @@ patch('P62d the expanded rule explains why it has no traffic',
 '  if(!samples.length)\n    return h+\'<div style="font-size:10.5px;color:var(--faint)">\'\n      +(flows.length?"No flow in this window matched this rule.":"No flow logs loaded, so rule traffic cannot be shown.")+\'</div>\';',
 '  if(!samples.length){\n    const why = (r.admin&&isAllow(r))\n      ? "Azure names the rule that denied a flow, never the one that allowed it, so traffic cannot be attributed to an AVNM allow rule. This does not mean it is unused."\n      : (flows.length?"No flow in this window matched this rule.":"No flow logs loaded, so rule traffic cannot be shown.");\n    return h+\'<div style="font-size:10.5px;color:var(--faint);line-height:1.45">\'+esc(why)+\'</div>\';\n  }')
 
+# ========================================================= DATADOG HEALTH RINGS
+# Datadog CNM colours a node's ring by HEALTH (green healthy / red alerting /
+# grey unknown), with the resource type shown by the centre icon. This tool
+# coloured the ring by resource TYPE. Move health onto the ring and keep type on
+# the centre dot + legend + tables, so nothing is lost. Honest about unknowns:
+# a node with no observed traffic gets a neutral grey ring, not a green one.
+patch("P70a overview health rings (type stays on the centre dot)",
+"""  node.append("circle").attr("r",rOf)
+    .attr("stroke-dasharray",d=>(d.type==="ext"||d.groupKey==="internet|all")?"5 3":"none")
+    .attr("fill",d=>(!badNodes.has(d.id)&&impairedNodes.has(d.id))?"#FFFBF2":"#FFFFFF")
+    .attr("stroke",d=>badNodes.has(d.id)||(d.type==="group"&&d.bad)?"#DC3545":TYPES[d.type].color)""",
+"""  // Datadog-style health ring: red = denied traffic seen, amber = impaired path,
+  // green = observed (allowed) traffic, grey = no signal. Resource TYPE stays on
+  // the centre dot and the legend/tables, so type colouring is preserved.
+  const trafficNodes=new Set();
+  for(const l of links){ if(l.kind==="traffic"&&!l.denied){ trafficNodes.add(l.source.id||l.source); trafficNodes.add(l.target.id||l.target); } }
+  const healthColor=d=>badNodes.has(d.id)?"#DC3545":impairedNodes.has(d.id)?"#E0A02B":trafficNodes.has(d.id)?"#2FA36A":"#C4CCD6";
+  node.append("circle").attr("r",rOf)
+    .attr("stroke-dasharray",d=>(d.type==="ext"||d.groupKey==="internet|all")?"5 3":"none")
+    .attr("fill",d=>(!badNodes.has(d.id)&&impairedNodes.has(d.id))?"#FFFBF2":"#FFFFFF")
+    .attr("stroke",d=>d.type==="group"?(d.bad?"#DC3545":TYPES[d.type].color):healthColor(d))""")
+
+# Dependencies view (Datadog's single-service map): same health colouring on the
+# side nodes and the root, type still carried by each node's centre dot.
+patch("P70b deps side-node health rings",
+'.attr("stroke",badNodes.has(d.id)?"#DC3545":TYPES[nd.type].color).attr("stroke-width",2);',
+'.attr("stroke",(badNodes.has(d.id)||d.denied)?"#DC3545":impairedNodes.has(d.id)?"#E0A02B":(d.total>0)?"#2FA36A":"#C4CCD6").attr("stroke-width",2);')
+
+patch("P70c deps root health ring",
+'.attr("stroke",badNodes.has(root.id)?"#DC3545":TYPES[root.type].color).attr("stroke-width",3);',
+'.attr("stroke",badNodes.has(root.id)?"#DC3545":impairedNodes.has(root.id)?"#E0A02B":"#2FA36A").attr("stroke-width",3);')
+
+# Legend: spell out that the node ring encodes health, so green/red/grey read.
+patch("P70d node-ring health legend",
+'''          <span class="chip"><i style="height:0;border-top:2px dashed var(--danger);width:16px;background:none"></i> denied</span>
+        </div>''',
+'''          <span class="chip"><i style="height:0;border-top:2px dashed var(--danger);width:16px;background:none"></i> denied</span>
+          <span class="chip" style="margin-left:8px"><b style="color:var(--dim);font-weight:600">Node ring = health</b></span>
+          <span class="chip"><i style="width:11px;height:11px;border-radius:50%;border:2px solid #2FA36A;background:none"></i> healthy</span>
+          <span class="chip"><i style="width:11px;height:11px;border-radius:50%;border:2px solid #DC3545;background:none"></i> denied</span>
+          <span class="chip"><i style="width:11px;height:11px;border-radius:50%;border:2px solid #E0A02B;background:none"></i> impaired</span>
+          <span class="chip"><i style="width:11px;height:11px;border-radius:50%;border:2px solid #C4CCD6;background:none"></i> no signal</span>
+        </div>''')
+
 open(SRC, "w", encoding="utf-8").write(html)
 print(f"OK — {len(applied)} patch(es) applied:")
 for a in applied:
