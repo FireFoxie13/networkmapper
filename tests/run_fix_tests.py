@@ -326,6 +326,18 @@ try:
             "azh5pcosql01f")
         check("Check3: hover box names type, resource group and VNet for a node",
               "Virtual machine" in tip and "azh5-sql-dr-westus" in tip and "azh5-sql-dr-vnet" in tip)
+        # dependency view must show the same hover tooltip as the overview map
+        deps_tip = page.evaluate("""(id)=>{
+            depsRoot=id;selected=id;viewMode='deps';
+            if(typeof syncViewBtns==='function')syncViewBtns();renderAll();
+            const c=[...document.querySelectorAll('svg circle')].find(x=>x.getAttribute('r')==='13');
+            if(!c)return '';
+            c.parentNode.dispatchEvent(new MouseEvent('mouseenter',{bubbles:false,clientX:200,clientY:200}));
+            const t=document.getElementById('tip');
+            return t.style.display==='block'?t.innerText:'';}""", ids["azh5pcosql01f-nic"])
+        check("Check3: dependency-view nodes show the hover tooltip too",
+              "Subscription" in deps_tip and "Resource group" in deps_tip and "VNet" in deps_tip, deps_tip[:120])
+        page.evaluate("()=>{viewMode='overview';if(typeof syncViewBtns==='function')syncViewBtns();renderAll();}")
 
         # ---------- Check 4: "it is not the network" verdicts ----------
         openv = trace("172.21.10.10", "172.20.10.20", 443)
