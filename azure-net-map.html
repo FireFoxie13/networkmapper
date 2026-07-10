@@ -1093,6 +1093,8 @@ let allFlowRows=[];           // normalized, with timestamps when present
 let flowSpanMin=0;            // how much history the scan actually contains
 let metricsRaw=EMBEDDED&&EMBEDDED.metrics?EMBEDDED.metrics:[];
 let recos=EMBEDDED&&EMBEDDED.recos?EMBEDDED.recos:[];
+let effRoutes=EMBEDDED&&EMBEDDED.effectiveRoutes?EMBEDDED.effectiveRoutes:[];
+const effRoutesBy=new Map(); for(const e of effRoutes){ if(e&&e.nicId)effRoutesBy.set(low(e.nicId),e.routes||[]); }
 let metricsBy=new Map();     // lowercased resourceId -> {MetricName:{avg,max,unit}}
 function indexMetrics(){
   metricsBy=new Map();
@@ -2969,6 +2971,17 @@ function renderPanel(){
   if(sel.meta.routes&&sel.meta.routes.length){
     html+='<div class="secTitle" style="color:var(--hi)">ROUTES</div>';
     for(const r of sel.meta.routes)html+='<div class="traf" style="cursor:default;color:var(--text)">'+esc(r)+'</div>';
+  }
+  {
+    const er=effRoutesBy.get(low(sel.id));
+    if(er&&er.length){
+      html+='<div class="secTitle" style="color:var(--hi)">EFFECTIVE ROUTES <span style="color:var(--faint);font-weight:400;text-transform:none;letter-spacing:0">UDR + BGP + system, as Azure applies them</span></div>';
+      for(const r of er.slice(0,24)){
+        const drop=/^none$/i.test(r.nextHopType||"");
+        const hop=(r.nextHopType||"")+(r.nextHopIp?" "+r.nextHopIp:"");
+        html+='<div class="traf" style="cursor:default;color:'+(drop?"var(--danger)":"var(--text)")+'">'+esc(r.prefix||"")+' → '+esc(hop)+(r.source?' <span style="color:var(--faint)">'+esc(r.source)+'</span>':'')+(drop?' <span style="color:var(--danger)">blackhole</span>':'')+'</div>';
+      }
+    }
   }
   if(sel.meta.rules&&sel.meta.rules.length){
     const RLBL={nsg:"NSG rules",adminrules:"AVNM security admin rules",fwrcg:"Firewall policy rules"};

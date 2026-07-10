@@ -2273,6 +2273,38 @@ patch("P74b Azure rule recommendations section in Analysis",
   }
   const groups=deniedByRule();''')
 
+# ================================================ EFFECTIVE ROUTES (per NIC)
+# The tool reads authored UDRs. generate-netmap.sh can now also collect each NIC's
+# EFFECTIVE route table (UDR + BGP + system, as Azure applies it) via Network Watcher
+# into EMBEDDED.effectiveRoutes. Show it on the resource's panel — the real answer to
+# "where does this traffic actually go?".
+patch("P75a load and index effective routes",
+'let recos=EMBEDDED&&EMBEDDED.recos?EMBEDDED.recos:[];',
+'''let recos=EMBEDDED&&EMBEDDED.recos?EMBEDDED.recos:[];
+let effRoutes=EMBEDDED&&EMBEDDED.effectiveRoutes?EMBEDDED.effectiveRoutes:[];
+const effRoutesBy=new Map(); for(const e of effRoutes){ if(e&&e.nicId)effRoutesBy.set(low(e.nicId),e.routes||[]); }''')
+
+patch("P75b effective-routes section on the panel",
+'''  if(sel.meta.routes&&sel.meta.routes.length){
+    html+='<div class="secTitle" style="color:var(--hi)">ROUTES</div>';
+    for(const r of sel.meta.routes)html+='<div class="traf" style="cursor:default;color:var(--text)">'+esc(r)+'</div>';
+  }''',
+'''  if(sel.meta.routes&&sel.meta.routes.length){
+    html+='<div class="secTitle" style="color:var(--hi)">ROUTES</div>';
+    for(const r of sel.meta.routes)html+='<div class="traf" style="cursor:default;color:var(--text)">'+esc(r)+'</div>';
+  }
+  {
+    const er=effRoutesBy.get(low(sel.id));
+    if(er&&er.length){
+      html+='<div class="secTitle" style="color:var(--hi)">EFFECTIVE ROUTES <span style="color:var(--faint);font-weight:400;text-transform:none;letter-spacing:0">UDR + BGP + system, as Azure applies them</span></div>';
+      for(const r of er.slice(0,24)){
+        const drop=/^none$/i.test(r.nextHopType||"");
+        const hop=(r.nextHopType||"")+(r.nextHopIp?" "+r.nextHopIp:"");
+        html+='<div class="traf" style="cursor:default;color:'+(drop?"var(--danger)":"var(--text)")+'">'+esc(r.prefix||"")+' → '+esc(hop)+(r.source?' <span style="color:var(--faint)">'+esc(r.source)+'</span>':'')+(drop?' <span style="color:var(--danger)">blackhole</span>':'')+'</div>';
+      }
+    }
+  }''')
+
 open(SRC, "w", encoding="utf-8").write(html)
 print(f"OK — {len(applied)} patch(es) applied:")
 for a in applied:

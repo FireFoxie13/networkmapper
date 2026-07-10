@@ -363,6 +363,28 @@ else
   echo "    skipped (set METRICS=1; needs the Monitoring Reader role)"
 fi
 
+# The tool otherwise reads AUTHORED user-defined routes. The EFFECTIVE route table — UDRs,
+# BGP-learned and system routes as Azure actually applies them — is only available per-NIC
+# via Network Watcher, so it is opt-in (one call per NIC). This closes the "reads UDRs, not
+# the effective route table" caveat when enabled.
+echo "[6b/6] Effective routes (per NIC, Network Watcher)..."
+echo "[]" > "$TMP/effroutes.json"
+if [ -n "${EFFECTIVE_ROUTES:-}" ]; then
+  : > "$TMP/effroutes_raw.json"
+  jq -r '.[] | select((.type|ascii_downcase)=="microsoft.network/networkinterfaces") | .id' "$TMP/topo.json" \
+  | while read -r NICID; do
+      [ -z "$NICID" ] && continue
+      az network nic show-effective-route-table --ids "$NICID" -o json 2>/dev/null \
+        | jq -c --arg nic "$NICID" '{nicId:$nic, routes:[.value[]? | {prefix:((.addressPrefix // [])[0] // ""), nextHopType:.nextHopType, nextHopIp:((.nextHopIpAddress // [])[0] // ""), source:.source, state:.state}]}' \
+        >> "$TMP/effroutes_raw.json" 2>/dev/null || true
+    done
+  jq -s '[.[] | select(.routes | length > 0)]' "$TMP/effroutes_raw.json" > "$TMP/effroutes.json" 2>/dev/null || echo "[]" > "$TMP/effroutes.json"
+  echo "    $(jq 'length' "$TMP/effroutes.json") NIC effective-route tables"
+else
+  echo "    skipped (set EFFECTIVE_ROUTES=1; one Network Watcher call per NIC, needs Reader on the NICs)"
+fi
+[ -f "$TMP/effroutes.json" ] || echo "[]" > "$TMP/effroutes.json"
+
 jq -n \
   --slurpfile t "$TMP/topo.json" \
   --slurpfile d "$TMP/dns.json" \
@@ -372,8 +394,9 @@ jq -n \
   --slurpfile mt "$TMP/metrics.json" \
   --slurpfile fw "$TMP/fwlogs.json" \
   --slurpfile rc "$TMP/recos.json" \
+  --slurpfile er "$TMP/effroutes.json" \
   --arg scanned "$STAMP" --arg scannedIso "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  '{topology:$t[0], dns:$d[0], flows:$f[0], subs:$s[0], sites:$st[0], metrics:$mt[0], fwlogs:$fw[0], recos:$rc[0], scanned:$scanned, scannedIso:$scannedIso}' > "$TMP/embed.json"
+  '{topology:$t[0], dns:$d[0], flows:$f[0], subs:$s[0], sites:$st[0], metrics:$mt[0], fwlogs:$fw[0], recos:$rc[0], effectiveRoutes:$er[0], scanned:$scanned, scannedIso:$scannedIso}' > "$TMP/embed.json"
 
 python3 - "$TEMPLATE" "$TMP/embed.json" "$OUT" << 'PYEOF'
 import sys, json

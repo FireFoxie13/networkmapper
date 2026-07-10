@@ -86,6 +86,16 @@ p["recos"] = [
      "SrcServiceTagsList": "", "DestServiceTagsList": "20.60.40.0/22 | Storage.CentralUS"},
 ]
 
+# ---- effective routes for the web NIC (UDR + BGP + system, as Azure applies them) ----
+p["effectiveRoutes"] = [
+    {"nicId": nic["id"], "routes": [
+        {"prefix": "172.22.0.0/16", "nextHopType": "VnetLocal", "nextHopIp": "", "source": "Default"},
+        {"prefix": "0.0.0.0/0", "nextHopType": "VirtualAppliance", "nextHopIp": "172.22.0.4", "source": "User"},
+        {"prefix": "172.30.0.0/16", "nextHopType": "None", "nextHopIp": "", "source": "User"},
+        {"prefix": "10.0.0.0/8", "nextHopType": "VirtualNetworkGateway", "nextHopIp": "", "source": "VirtualNetworkGateway"},
+    ]},
+]
+
 # ---- an orphaned, unassociated public IP (billable, attached to nothing) ----
 p["topology"].append({
     "id": f"/subscriptions/{sub_a}/resourcegroups/iam101-delinea-prod-centralus/providers/microsoft.network/publicipaddresses/orphan-legacy-pip",
