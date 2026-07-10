@@ -1822,6 +1822,12 @@ function showDenyTip(ev,e){
 function showTip(ev,d){
   const tip=document.getElementById("tip"); if(!tip)return;
   let html='<div class="tt">'+esc(d.name)+'</div>';
+  if(d.type!=="group"){
+    const sub=(TYPES[d.type]&&TYPES[d.type].label)||d.type;
+    const ip=(d.meta&&(d.meta.ips||d.meta.ip||d.meta.privateIp||d.meta.prefix))||"";
+    const extra=(d.meta&&(d.meta.provider||d.meta.serviceTag||d.meta.cname))||"";
+    html+='<div style="font-size:10.5px;color:#9AA4B5;font-weight:400;margin:-2px 0 6px">'+esc(sub)+(ip?" \u00b7 "+esc(ip):"")+(extra?" \u00b7 "+esc(extra):"")+'</div>';
+  }
   if(d.type==="group"){
     html+='<div class="tr"><span>Resources</span><b>'+d.count+'</b></div>';
     if(d.bad)html+='<div class="tr bad"><span>With denied flows</span><b>'+d.bad+'</b></div>';

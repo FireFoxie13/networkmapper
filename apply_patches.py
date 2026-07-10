@@ -2609,6 +2609,21 @@ patch("P82b render route-table layers in the effective-rules panel",
         }
         for(const r of [...L.rules].sort((a,b)=>a.priority-b.priority).slice(0,12)){''')
 
+# ================================ HOVER BOX: SAY WHAT THE RESOURCE IS
+# Under the name, add a plain-language line — the resource type, its IP, and any
+# provider/service-tag/CNAME — so hovering explains what the thing is, not just
+# its name (a NIC reads as "Network interface · 10.x", Cloudflare as its provider).
+patch("P83 resource type line in the hover box",
+'  let html=\'<div class="tt">\'+esc(d.name)+\'</div>\';\n  if(d.type==="group"){',
+'''  let html='<div class="tt">'+esc(d.name)+'</div>';
+  if(d.type!=="group"){
+    const sub=(TYPES[d.type]&&TYPES[d.type].label)||d.type;
+    const ip=(d.meta&&(d.meta.ips||d.meta.ip||d.meta.privateIp||d.meta.prefix))||"";
+    const extra=(d.meta&&(d.meta.provider||d.meta.serviceTag||d.meta.cname))||"";
+    html+='<div style="font-size:10.5px;color:#9AA4B5;font-weight:400;margin:-2px 0 6px">'+esc(sub)+(ip?" \\u00b7 "+esc(ip):"")+(extra?" \\u00b7 "+esc(extra):"")+'</div>';
+  }
+  if(d.type==="group"){''')
+
 open(SRC, "w", encoding="utf-8").write(html)
 print(f"OK — {len(applied)} patch(es) applied:")
 for a in applied:
