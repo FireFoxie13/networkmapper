@@ -9,6 +9,8 @@ fix-scan.html
 fwlog-scan.html
 hairball-*.html
 stress-scan.html
+incident-scan.html
+incident-scan-blocked.html
 ext-scan.html
 demo-scan.html
 route-scan.html

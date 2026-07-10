@@ -31,11 +31,12 @@ jobs:
           python3 tests/build_scan.py
           python3 tests/run_tests.py
 
-      - name: run_fix_tests.py (57 assertions)
+      - name: run_fix_tests.py (80 assertions)
         run: |
           python3 tests/build_fix_scan.py
           python3 tests/build_fwlog_scan.py
           python3 tests/build_hairball.py
+          python3 tests/build_incident_scan.py
           python3 tests/run_fix_tests.py
 
       - name: run_stress.py (5 assertions)

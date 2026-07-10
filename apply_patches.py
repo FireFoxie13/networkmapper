@@ -2640,6 +2640,433 @@ patch("P85 deps single-click opens details, double-click navigates",
 '      const node=g.append("g").style("cursor","pointer").on("click",()=>{depsRoot=d.id;selected=d.id;renderAll();});',
 '      const node=g.append("g").style("cursor","pointer")\n        .on("click",(ev)=>{ev.stopPropagation();selected=d.id;renderPanel();})\n        .on("dblclick",(ev)=>{ev.stopPropagation();depsRoot=d.id;selected=d.id;renderAll();});')
 
+# ================================================================ INCIDENT WORK
+# Four checks driven by the azh5pcosql01f DR-replica incident: the path worked,
+# but the replica could not reach its TDE key in Key Vault. The signals were all
+# in fields the mapper discarded. First, capture those fields.
+
+# P90a: VNet custom DNS servers (dhcpOptions) — decides private-endpoint resolution.
+patch("P90a VNet custom DNS servers",
+'      node.meta.prefixes=((p.addressSpace||{}).addressPrefixes||[]).join(", ");',
+'''      node.meta.prefixes=((p.addressSpace||{}).addressPrefixes||[]).join(", ");
+      node.meta.dnsServers=((p.dhcpOptions||{}).dnsServers||[]).join(", ");''')
+
+# P90b: NIC facts — per-NIC DNS override, IP forwarding, accelerated networking,
+# default outbound, primary.
+patch("P90b NIC facts",
+'''      node.meta.ips=ips.join(", ");
+      for(const ic of p.ipConfigurations||[]){const ip=ic.properties||ic;
+        for(const a of ip.applicationSecurityGroups||[]){ if(a.id){addNode(a.id,"asg");addEdge(it.id,a.id,"asg");} }}''',
+'''      node.meta.ips=ips.join(", ");
+      node.meta.nicDns=((p.dnsSettings||{}).dnsServers||[]).join(", ");
+      node.meta.ipForwarding=!!p.enableIPForwarding;
+      node.meta.accelNet=!!p.enableAcceleratedNetworking;
+      node.meta.defaultOutbound=p.defaultOutboundConnectivityEnabled;
+      node.meta.primaryNic=!!p.primary;
+      for(const ic of p.ipConfigurations||[]){const ip=ic.properties||ic;
+        for(const a of ip.applicationSecurityGroups||[]){ if(a.id){addNode(a.id,"asg");addEdge(it.id,a.id,"asg");} }}''')
+
+# P90c: private endpoint target service, group ids and FQDNs.
+patch("P90c private endpoint target + FQDNs",
+'''      const conns=[].concat(p.privateLinkServiceConnections||[],p.manualPrivateLinkServiceConnections||[]);
+      for(const c of conns){const cp=c.properties||c;
+        if(cp.privateLinkServiceId){addNode(cp.privateLinkServiceId,"svc",tail(cp.privateLinkServiceId));addEdge(it.id,cp.privateLinkServiceId,"plink");}}
+      node.meta.ips=(p.customDnsConfigs||[]).flatMap(d=>d.ipAddresses||[]).join(", ");''',
+'''      const conns=[].concat(p.privateLinkServiceConnections||[],p.manualPrivateLinkServiceConnections||[]);
+      for(const c of conns){const cp=c.properties||c;
+        if(cp.privateLinkServiceId){addNode(cp.privateLinkServiceId,"svc",tail(cp.privateLinkServiceId));addEdge(it.id,cp.privateLinkServiceId,"plink");
+          if(!node.meta.peTarget)node.meta.peTarget=cp.privateLinkServiceId;
+          if(!node.meta.peGroupIds&&cp.groupIds)node.meta.peGroupIds=(cp.groupIds||[]).join(",");}}
+      node.meta.ips=(p.customDnsConfigs||[]).flatMap(d=>d.ipAddresses||[]).join(", ");
+      node.meta.peFqdns=(p.customDnsConfigs||[]).map(d=>d.fqdn).filter(Boolean);''')
+
+# P90e: service-level ACLs (Key Vault / storage / SQL) and full VM facts.
+patch("P90e service ACLs + VM facts",
+'    if(t==="vm")node.meta.size=(p.hardwareProfile&&p.hardwareProfile.vmSize)||"";',
+'''    if(t==="kv"||t==="storage"||t==="sql"){
+      const acl=p.networkAcls||{};
+      node.meta.aclDefault=acl.defaultAction||"";
+      node.meta.aclVnetRules=(acl.virtualNetworkRules||[]).length;
+      node.meta.aclIpRules=(acl.ipRules||[]).length;
+      node.meta.publicNet=p.publicNetworkAccess||"";
+    }
+    if(t==="vm"){
+      node.meta.size=(p.hardwareProfile&&p.hardwareProfile.vmSize)||"";
+      const iv=(p.extended&&p.extended.instanceView)||p.instanceView||{};
+      node.meta.power=(iv.powerState&&iv.powerState.displayStatus)||((iv.statuses||[]).map(s=>s.displayStatus||"").find(x=>/^VM /i.test(x)))||"";
+      node.meta.osName=iv.osName||(p.storageProfile&&p.storageProfile.osDisk&&p.storageProfile.osDisk.osType)||"";
+      node.meta.osVersion=iv.osVersion||"";
+      node.meta.licenseType=p.licenseType||"";
+      node.meta.hyperV=iv.hyperVGeneration||"";
+      for(const n of ((p.networkProfile&&p.networkProfile.networkInterfaces)||[])){ if(n.id){addNode(n.id,"nic");addEdge(it.id,n.id,"nicOf");} }
+    }''')
+
+# ---------------------------------------------------------------- CHECK 1 & 2
+# Private endpoint DNS reachability, and services that refuse everything except
+# their private endpoint. The tool never claims to know what a resolver returned;
+# it names the exact verify command and escapes it at render.
+
+# C1a: guidance for the two new impairment kinds.
+patch("C1a impair-fix entries for PE-DNS and deny-only",
+'''  routedrop:"Confirm the prefix should be dropped. If it should not, remove the next-hop-None route or point it at the firewall.",
+};''',
+'''  routedrop:"Confirm the prefix should be dropped. If it should not, remove the next-hop-None route or point it at the firewall.",
+  pednsunverif:"On a client in that VNet run Resolve-DnsName <fqdn>. If it returns a public IP, the VNet is not linked to the private DNS zone (or its custom DNS forwarder is not), so the client reaches the public endpoint. Link the zone to the VNet, or point the custom forwarder at a resolver that can.",
+  denyonlype:"The service refuses everything except its private endpoint. Clients must resolve the private IP; confirm with Resolve-DnsName <fqdn> on a client in the calling VNet.",
+};''')
+
+# C1b: the reachability model. peFqdns / peTarget / zone dnslink edges / vnet
+# custom DNS are all parsed already (P90); this joins them.
+patch("C1b peDnsFindings model",
+'let connCache=null;',
+'''let connCache=null;
+let peDnsCache=null;
+/* ---- private endpoint DNS reachability (Check 1) + deny-only services (Check 2) ---- */
+const PRIVLINK_ZONE_BY_GROUP={
+  vault:"privatelink.vaultcore.azure.net",
+  blob:"privatelink.blob.core.windows.net",
+  file:"privatelink.file.core.windows.net",
+  table:"privatelink.table.core.windows.net",
+  queue:"privatelink.queue.core.windows.net",
+  dfs:"privatelink.dfs.core.windows.net",
+  web:"privatelink.web.core.windows.net",
+  sqlServer:"privatelink.database.windows.net",
+  sqlserver:"privatelink.database.windows.net",
+  registry:"privatelink.azurecr.io",
+  namespace:"privatelink.servicebus.windows.net",
+  sites:"privatelink.azurewebsites.net"
+};
+function peDnsFindings(){
+  if(peDnsCache)return peDnsCache;
+  const byId=new Map(fullGraph.nodes.map(n=>[n.id,n]));
+  const vo=vnetOfCache||computeVnetOf();
+  const norm=s=>String(s||"").replace(/\\.$/,"").toLowerCase();
+  const zones=fullGraph.nodes.filter(n=>n.type==="zone");
+  const linkedVnets=z=>fullGraph.edges.filter(e=>e.kind==="dnslink"&&e.source===z.id).map(e=>e.target);
+  const customDns=vid=>{const v=byId.get(vid);return (v&&v.meta&&v.meta.dnsServers)||"";};
+  const out=[];
+  for(const pe of fullGraph.nodes){
+    if(pe.type!=="pe")continue;
+    const fqdns=pe.meta.peFqdns||[];
+    const groupIds=(pe.meta.peGroupIds||"").split(",").map(x=>x.trim()).filter(Boolean);
+    const targetId=pe.meta.peTarget||null;
+    const target=targetId?byId.get(targetId):null;
+    // zones whose name is a suffix of one of the PE's FQDNs
+    let zoneNodes=zones.filter(z=>{const zn=norm(z.name);return zn&&fqdns.some(f=>{const fn=norm(f);return fn===zn||fn.endsWith("."+zn);});});
+    let expectedZoneName="";
+    if(!zoneNodes.length){
+      for(const g of groupIds){if(PRIVLINK_ZONE_BY_GROUP[g]){expectedZoneName=PRIVLINK_ZONE_BY_GROUP[g];break;}}
+      if(expectedZoneName)zoneNodes=zones.filter(z=>norm(z.name)===norm(expectedZoneName));
+    }
+    const fqdn=fqdns[0]||(target&&target.name&&expectedZoneName?target.name+"."+expectedZoneName:expectedZoneName||(target&&target.name)||pe.name);
+    // client VNets: sources of flows to the PE or its target, plus VNets peered to the PE's own VNet
+    const peVnet=vo.get(pe.id)||null;
+    const clientVnets=new Map();
+    for(const e of fullGraph.edges){
+      if(e.kind==="traffic"&&(e.target===pe.id||(targetId&&e.target===targetId))){
+        const cv=vo.get(e.source); if(cv&&cv!==peVnet&&!clientVnets.has(cv))clientVnets.set(cv,"observed traffic");
+      }
+      if(e.kind==="peer"&&peVnet&&(e.source===peVnet||e.target===peVnet)){
+        const other=e.source===peVnet?e.target:e.source;
+        if(other&&other!==peVnet&&!clientVnets.has(other))clientVnets.set(other,"VNet peering");
+      }
+    }
+    const denyOnly=!!(target&&(target.type==="kv"||target.type==="storage"||target.type==="sql")
+      &&norm(target.meta.aclDefault)==="deny"&&!target.meta.aclVnetRules&&!target.meta.aclIpRules);
+    const linked=new Set(); for(const z of zoneNodes)for(const v of linkedVnets(z))linked.add(v);
+    const broken=[];
+    for(const [cv,via] of clientVnets){
+      if(linked.has(cv))continue;              // linked to the zone: resolution works
+      const dns=customDns(cv);
+      if(!dns)continue;                         // default Azure DNS is a different, verifiable story
+      broken.push({vnet:cv,vnetName:(byId.get(cv)||{name:cv}).name,dns,via});
+    }
+    out.push({peId:pe.id,peName:pe.name,targetId,target,fqdn,
+      zoneNodes,zoneName:(zoneNodes[0]&&zoneNodes[0].name)||expectedZoneName,
+      linkedCount:linked.size,denyOnly,broken,clientCount:clientVnets.size});
+  }
+  peDnsCache=out; return out;
+}''')
+
+# C1c: invalidate the new cache wherever the graph is rebuilt.
+patch("C1c peDnsCache invalidation",
+'connCache=null; vnetOfCache=null;',
+'connCache=null; vnetOfCache=null; peDnsCache=null;',
+count=2)
+
+# C1d: surface the findings in the connectivity-problem list (Troubleshoot tab +
+# map colouring + resource panels).
+patch("C1d connectivityProblems wires in Checks 1 & 2",
+'''  const order={high:0,warn:1,info:2};
+  P.sort((a,b)=>order[a.sev]-order[b.sev]||b.evidence.localeCompare(a.evidence));''',
+'''  /* --- private endpoint DNS reachability (Check 1) + deny-only services (Check 2) --- */
+  {
+    const brokenTargets=new Set();
+    for(const f of peDnsFindings()){
+      for(const b of f.broken){
+        const sev=f.denyOnly?"high":"warn";
+        if(f.denyOnly&&f.targetId)brokenTargets.add(f.targetId);
+        add(sev,"pednsunverif",
+          (f.denyOnly?"Private endpoint unreachable from "+b.vnetName:"Private endpoint resolution unverifiable from "+b.vnetName)+": "+f.peName,
+          "VNet "+b.vnetName+" is a client of "+f.peName+" ("+b.via+") but is not linked to the private DNS zone "+(f.zoneName||"(none found)")
+          +", and it sets custom DNS servers ("+b.dns+"). This tool cannot see what that resolver returns. If it does not hand back the private IP, the client resolves the public name"
+          +(f.denyOnly?" and the service, which refuses everything except its private endpoint, refuses the connection at the network layer."
+                      :" and connects to the public endpoint instead of the private one.")
+          +" Private endpoint resolution cannot be verified from this VNet. Confirm on a client with: Resolve-DnsName "+f.fqdn,
+          f.denyOnly&&f.targetId?f.targetId:f.peId,"configuration");
+      }
+    }
+    for(const n of fullGraph.nodes){
+      if(!(n.type==="kv"||n.type==="storage"||n.type==="sql"))continue;
+      if(low(n.meta.aclDefault||"")!=="deny"||n.meta.aclVnetRules||n.meta.aclIpRules)continue;
+      if(brokenTargets.has(n.id))continue;      // already raised as a connectivity problem above
+      const hasPe=fullGraph.edges.some(e=>e.kind==="plink"&&e.target===n.id);
+      add("info","denyonlype","Reachable only through its private endpoint: "+n.name,
+        "networkAcls.defaultAction is Deny with no virtual network rules and no IP rules. "
+        +(hasPe?"A client that resolves the public name will connect at the network layer and be refused by the service. Only its private endpoint is accepted."
+              :"No private endpoint is present in this scan either, so nothing can reach it at the network layer. Confirm a private endpoint exists for the clients that need it."),
+        n.id,"configuration");
+    }
+  }
+  const order={high:0,warn:1,info:2};
+  P.sort((a,b)=>order[a.sev]-order[b.sev]||b.evidence.localeCompare(a.evidence));''')
+
+# C1e: dedicated Private-endpoint-DNS section on the PE panel and on the panel of
+# the service it fronts. Shows the zone, its link count, and per-client-VNet
+# resolution status with the exact verify command (escaped, never run).
+patch("C1e PE-DNS panel section",
+'''  // Why is this resource's traffic being denied?
+  (function(){''',
+'''  // ---- Private endpoint DNS reachability (Check 1) ----
+  (function(){
+    const finds=peDnsFindings();
+    const f=finds.find(x=>x.peId===sel.id)
+      || ((sel.type==="kv"||sel.type==="storage"||sel.type==="sql")?finds.find(x=>x.targetId===sel.id):null);
+    if(!f)return;
+    html+='<div class="secTitle" style="color:#2563EB">Private endpoint DNS</div>';
+    let dm="";
+    if(f.target)dm+="service "+esc(f.target.name)+"<br>";
+    if(f.fqdn)dm+="name "+esc(f.fqdn)+"<br>";
+    dm+="private DNS zone "+(f.zoneName?esc(f.zoneName):'<span style="color:#9A6700">none found in scan</span>')+"<br>";
+    if(f.zoneName)dm+="zone linked to "+f.linkedCount+" VNet"+(f.linkedCount===1?"":"s")+"<br>";
+    if(f.denyOnly)dm+='<span style="color:#9A6700">service refuses all but its private endpoint (networkAcls default Deny)</span><br>';
+    html+='<div class="meta">'+dm+'</div>';
+    if(f.broken.length){
+      for(const b of f.broken)
+        html+='<div class="impairBox"><div class="ih">Resolution unverifiable from '+esc(b.vnetName)+'</div>'
+          +'<div class="iw">This VNet is a client of the endpoint ('+esc(b.via)+') but is not linked to the zone, and it sets custom DNS servers ('+esc(b.dns)+'). The tool cannot see what that resolver returns; if it does not hand back the private IP the client reaches the public endpoint.</div>'
+          +'<div class="iw"><b>Confirm on a client in that VNet:</b></div>'
+          +'<pre data-cmd="Resolve-DnsName '+esc(f.fqdn)+'">Resolve-DnsName '+esc(f.fqdn)+'</pre>'
+          +'<button class="copyFix" data-copy="Resolve-DnsName '+esc(f.fqdn)+'">Copy command</button></div>';
+    } else if(f.clientCount){
+      html+='<div class="meta" style="color:#3ECF8E">Observed client VNets are linked to the zone or use default Azure DNS. Resolution is expected to succeed.</div>';
+    }
+  })();
+
+  // Why is this resource's traffic being denied?
+  (function(){''')
+
+# ---------------------------------------------------------------- CHECK 3
+# Surface the compute / NIC facts already collected. The VM panel names its size,
+# OS, power state (flagged when not running), license and generation, and lists
+# every attached NIC. The NIC panel names its owning VM and flags a per-NIC DNS
+# override that differs from its subnet neighbours.
+patch("C3 VM and NIC facts panels",
+'''  html+='<div class="meta">'+meta+'</div>';
+  if(sel.meta.routes&&sel.meta.routes.length){''',
+'''  html+='<div class="meta">'+meta+'</div>';
+  // ---- Compute facts (Check 3): virtual machine ----
+  if(sel.type==="vm"){
+    let vm="";
+    if(sel.meta.size)vm+="size "+esc(sel.meta.size)+"<br>";
+    if(sel.meta.osName)vm+="OS "+esc(sel.meta.osName)+(sel.meta.osVersion?" "+esc(sel.meta.osVersion):"")+"<br>";
+    if(sel.meta.hyperV)vm+="generation "+esc(sel.meta.hyperV)+"<br>";
+    if(sel.meta.licenseType)vm+="license "+esc(sel.meta.licenseType)+"<br>";
+    if(sel.meta.power)vm+="power "+esc(sel.meta.power)+"<br>";
+    if(vm)html+='<div class="secTitle">Compute</div><div class="meta">'+vm+'</div>';
+    if(sel.meta.power&&!/running/i.test(sel.meta.power))
+      html+='<div class="impairBox"><div class="ih">Power state: '+esc(sel.meta.power)+'</div>'
+        +'<div class="iw">The VM is not running. Nothing it hosts can accept a connection; this is not a network block.</div></div>';
+    const seenNic=new Set();
+    const nics=fullGraph.edges.filter(e=>e.kind==="nicOf"&&e.source===sel.id)
+      .map(e=>byId.get(e.target)).filter(n=>n&&!seenNic.has(n.id)&&seenNic.add(n.id));
+    if(nics.length){
+      html+='<div class="secTitle">Network interfaces ('+nics.length+')</div>';
+      for(const nic of nics)
+        html+='<div class="row" data-nav="'+esc(nic.id)+'"><span style="color:'+TYPES.nic.color+';font-size:11px">\\u25cf</span>'
+          +'<span style="word-break:break-all">'+esc(nic.name)+(nic.meta.ips?' <span style="color:var(--faint)">'+esc(nic.meta.ips)+'</span>':'')
+          +(nic.meta.primaryNic?' <span style="color:var(--hi)">primary</span>':'')+'</span></div>';
+    }
+  }
+  // ---- NIC facts (Check 3) ----
+  if(sel.type==="nic"){
+    let nf="";
+    const owner=fullGraph.edges.filter(e=>e.kind==="nicOf"&&e.target===sel.id).map(e=>byId.get(e.source)).filter(Boolean)[0];
+    if(owner)nf+=(TYPES[owner.type]?TYPES[owner.type].label:owner.type)+" "+esc(owner.name)+"<br>";
+    if(sel.meta.primaryNic)nf+="primary NIC<br>";
+    if(sel.meta.nicDns)nf+='<span style="color:#9A6700">DNS override '+esc(sel.meta.nicDns)+'</span><br>';
+    if(sel.meta.ipForwarding)nf+="IP forwarding enabled<br>";
+    if(sel.meta.accelNet)nf+="accelerated networking<br>";
+    if(sel.meta.defaultOutbound===false)nf+='<span style="color:#9A6700">default outbound connectivity disabled</span><br>';
+    if(nf)html+='<div class="secTitle">Interface</div><div class="meta">'+nf+'</div>';
+    if(sel.meta.nicDns){
+      const sub=fullGraph.edges.filter(e=>e.kind==="inSubnet"&&e.source===sel.id).map(e=>e.target)[0];
+      if(sub){
+        const peers=fullGraph.edges.filter(e=>e.kind==="inSubnet"&&e.target===sub&&e.source!==sel.id)
+          .map(e=>byId.get(e.source)).filter(n=>n&&n.type==="nic");
+        const others=peers.filter(n=>(n.meta.nicDns||"")!==sel.meta.nicDns);
+        if(peers.length&&others.length)
+          html+='<div class="impairBox"><div class="ih">This NIC overrides DNS; neighbours in the subnet do not</div>'
+            +'<div class="iw">'+esc(sel.name)+' resolves through '+esc(sel.meta.nicDns)+' while '+others.length+' other NIC'+(others.length===1?"":"s")+' in the same subnet use the subnet/VNet default. A per-NIC DNS override is easy to miss and can point one host at a resolver that cannot see the private DNS zones.</div>'
+            +'<div class="iw"><b>Confirm on the host:</b></div>'
+            +'<pre data-cmd="Resolve-DnsName &lt;fqdn&gt;">Resolve-DnsName &lt;fqdn&gt;</pre></div>';
+      }
+    }
+  }
+  if(sel.meta.routes&&sel.meta.routes.length){''')
+
+# ---------------------------------------------------------------- CHECK 4
+# "It is not the network" verdicts. Positive evidence only: a firewall Allow row
+# or an observed allowed flow says NOT BLOCKED; a firewall/flow Deny or a
+# blackhole route or a matching AVNM deny says BLOCKED; silence is UNKNOWN, never
+# "allowed". When the path is open, rank the non-network causes by how observable
+# they are and hand the operator the exact command for each — nothing is run.
+patch("C4a pathVerdict + nonNetworkCauses",
+'function renderTrace(){',
+'''// Classify a conversation with positive evidence only. Silence is UNKNOWN.
+function pathVerdict(src,dst,port,proto,steps){
+  const fw=fwVerdictFor(src,dst,port);
+  const obs=observedVerdict(src,dst,port);
+  let blackhole=null;
+  for(const e of fullGraph.edges){
+    if(e.kind!=="traffic"||!e.rows)continue;
+    for(const r of e.rows){ if(r.srcIp===src&&r.dstIp===dst&&(!port||+r.port===+port)&&r.routeDrop){blackhole=r;break;} }
+    if(blackhole)break;
+  }
+  const cfgDeny=steps.find(s=>s.verdict==="deny"&&s.rule&&/avnm/i.test(s.layer));
+  let state="UNKNOWN",cite="",citeKind="none",fixRow=null;
+  if(fw&&fwIsDeny(fw)){
+    state="BLOCKED"; citeKind="fwdeny";
+    cite="Azure Firewall logged a "+(fw.action||"deny")+" for this exact conversation"+(fw.rule?' (rule "'+fw.rule+'")':"")+". "+explainFwDeny(fw);
+    fixRow={srcIp:src,dstIp:dst,port:port,proto:proto,fwRule:fw.rule,fwPolicy:fw.policy,fwGroup:fw.group,fwCollection:fw.collection,fwTable:fw.table,fwReason:fw.reason};
+  } else if(obs&&low(obs.status)==="denied"){
+    state="BLOCKED"; citeKind="flowdeny";
+    cite="VNet flow logs recorded this flow as Denied"+(obs.aclRule?' by "'+obs.aclRule+'"':"")+(obs.layer?" at "+obs.layer:"")+" ("+Number(obs.count).toLocaleString()+" flows). "+(obs.why||"");
+  } else if(blackhole){
+    state="BLOCKED"; citeKind="blackhole";
+    cite="A route with next hop None ("+blackhole.rtName+", "+blackhole.rtPrefix+") discards this on the platform. Nothing logs a deny because no rule is involved.";
+    fixRow=blackhole;
+  } else if(cfgDeny){
+    state="BLOCKED"; citeKind="avnmdeny";
+    cite=cfgDeny.layer+' rule "'+cfgDeny.rule.name+'" ('+cfgDeny.rule.access+") matches this flow. It is evaluated before NSGs and an allow below it cannot override it.";
+    fixRow={srcIp:src,dstIp:dst,port:port,proto:proto,aclRule:cfgDeny.rule.name,aclGroup:cfgDeny.resource};
+  } else if(fw&&!fwIsDeny(fw)){
+    state="NOT BLOCKED"; citeKind="fwallow";
+    cite="Azure Firewall logged an Allow for this exact conversation"+(fw.rule?' (rule "'+fw.rule+'")':"")+". The packet reached the firewall and was permitted \\u2014 the strongest evidence the network path is open.";
+  } else if(obs&&low(obs.status)==="allowed"){
+    state="NOT BLOCKED"; citeKind="flowallow";
+    cite="VNet flow logs recorded "+Number(obs.count).toLocaleString()+" allowed flow(s) for this conversation. The traffic was observed passing, so the network path is open.";
+  } else {
+    cite="Nothing in this scan logged this exact conversation \\u2014 no firewall row, no flow-log row, no blackhole route, no matching AVNM deny. The network path cannot be confirmed either way from this data.";
+  }
+  return {state,cite,citeKind,fw,obs,blackhole,cfgDeny,fixRow};
+}
+// When the network is not the problem, the ordered list of what else could be.
+// DNS and the service ACL are observable from topology/config; RBAC is not, so it
+// ranks lower even though it is a common cause once the path is open.
+function nonNetworkCauses(src,dst,port,proto){
+  const causes=[];
+  const dstNode=ownerOfIp(dst);
+  const finds=peDnsFindings();
+  let pe=null;
+  if(dstNode){
+    if(dstNode.type==="pe")pe=finds.find(f=>f.peId===dstNode.id);
+    else pe=finds.find(f=>f.targetId===dstNode.id);
+  }
+  if(!pe)pe=finds.find(f=>{const p=byId.get(f.peId);return p&&String(p.meta.ips||"").split(/,\\s*/).includes(dst);});
+  const svc=(dstNode&&(dstNode.type==="kv"||dstNode.type==="storage"||dstNode.type==="sql"))?dstNode:(pe&&pe.target)||null;
+  // 1. DNS
+  causes.push({n:1,obs:"observable in topology \\u2014 resolver output is not",title:"DNS resolution",
+    detail:pe
+      ?(pe.broken.length
+          ?"A client VNet reaching "+pe.peName+" uses custom DNS and is not linked to the private DNS zone "+(pe.zoneName||"(none found)")+". If the resolver returns the public IP, the client connects to the public endpoint. This tool cannot see what the resolver returned."
+          :"Confirm the client resolves the private IP of "+pe.peName+", not the public name.")
+      :"Confirm the client resolves the address you expect. This tool cannot see what a resolver returned.",
+    cmd:"Resolve-DnsName "+(pe?pe.fqdn:"<fqdn>")});
+  // 2. Service ACL
+  if(svc&&low(svc.meta.aclDefault||"")==="deny"&&!svc.meta.aclVnetRules&&!svc.meta.aclIpRules)
+    causes.push({n:2,obs:"observable in config",title:"Service network ACL",
+      detail:svc.name+" sets networkAcls.defaultAction Deny with no virtual network rules and no IP rules. A client that arrives on the public name is refused by the service above the network layer; only its private endpoint is accepted."});
+  // 3. Authorization / RBAC
+  causes.push({n:3,obs:"not observable from network data \\u2014 ranked lower for that reason",title:"Authorization / RBAC",
+    detail:"Key Vault access policies or RBAC, storage keys/SAS, SQL logins. This tool sees no identity data, so it can neither confirm nor rule this out \\u2014 but once the path is open it is a common cause."});
+  // 4. Effective routes
+  causes.push({n:4,obs:"partially observable \\u2014 user-defined routes only, not the merged table",title:"Effective routes",
+    detail:"This tool reads UDRs but not the system + BGP + UDR table Azure actually applies. A BGP or system route could still be steering this traffic.",
+    cmd:"az network nic show-effective-route-table --ids <nicId> -o table"});
+  // 5. live probe
+  causes.push({n:5,obs:"authoritative live probe",title:"Confirm the live decision",
+    detail:"Ask the Azure platform directly what it does with this exact packet.",
+    cmd:"az network watcher test-ip-flow --direction Outbound --protocol "+(proto||"TCP")+" --local "+src+":0 --remote "+dst+":"+(port||443)+" --vm <vmName> --nic <nicName>"});
+  return causes;
+}
+function renderTrace(){''')
+
+# C4b: rework renderTrace to lead with the positive-evidence verdict, keep the
+# layer walk and the ground-truth comparison, then either the non-network causes
+# (path open) or a fix box (path blocked).
+patch("C4b renderTrace verdict + causes",
+'''  const steps=tracePath(src,dst,port,proto);
+  const blocked=steps.some(s=>s.verdict==="deny");
+  let html='<div class="statusline">'+esc(src)+' → '+esc(dst)+' :'+port+'/'+esc(proto)+' — '+
+    (blocked?'<b style="color:var(--danger)">blocked</b>':'<b style="color:var(--ok)">allowed by the rules in this scan</b>')+'</div>';''',
+'''  const steps=tracePath(src,dst,port,proto);
+  const blocked=steps.some(s=>s.verdict==="deny");
+  const v=pathVerdict(src,dst,port,proto,steps);
+  const vColor=v.state==="BLOCKED"?"var(--danger)":v.state==="NOT BLOCKED"?"var(--ok)":"#9A6700";
+  let html='<div class="verdictBox" style="border:1px solid '+vColor+';border-radius:10px;padding:12px 14px;margin-bottom:12px">'
+    +'<div style="font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--faint);font-weight:600">Network path</div>'
+    +'<div style="font-size:18px;font-weight:700;color:'+vColor+';margin:2px 0 6px">'+esc(v.state)+'</div>'
+    +'<div class="sd" style="line-height:1.55">'+esc(v.cite)+'</div>'
+    +(v.state==="NOT BLOCKED"?'<div class="sd" style="margin-top:6px;color:var(--dim)">If the connection still fails, the cause is above the network. The ranked list below says where to look, most observable first.</div>':'')
+    +(v.state==="UNKNOWN"?'<div class="sd" style="margin-top:6px;color:var(--dim)">This is not a verdict of "allowed". Load the matching flow logs or run the live probe below to get a real answer.</div>':'')
+    +'</div>';
+  html+='<div class="statusline" style="color:var(--faint)">Layer walk for '+esc(src)+' \\u2192 '+esc(dst)+' :'+port+'/'+esc(proto)+'</div>';''')
+
+# C4c: after the ground-truth block, append the ordered causes (open path) and
+# wire copy buttons inside the trace panel.
+patch("C4c causes + fix box + copy wiring",
+'''  } else {
+    html+='<div class="statusline">This trace evaluates configured rules only. Load VNet flow logs to compare it against what Azure actually did.</div>';
+  }
+  out.innerHTML=html;
+}''',
+'''  } else {
+    html+='<div class="statusline">This trace evaluates configured rules only. Load VNet flow logs to compare it against what Azure actually did.</div>';
+  }
+  if(v.state==="BLOCKED"&&v.fixRow){
+    html+=fixBoxHtml(v.fixRow);
+  } else {
+    const causes=nonNetworkCauses(src,dst,port,proto);
+    html+='<div class="secTitle" style="color:var(--hi);margin-top:14px">If it is not the network, look here \\u2014 in order</div>';
+    for(const c of causes){
+      html+='<div class="impairBox"><div class="ih">'+c.n+'. '+esc(c.title)+' <span style="color:var(--faint);font-weight:400">\\u00b7 '+esc(c.obs)+'</span></div>'
+        +'<div class="iw">'+esc(c.detail)+'</div>'
+        +(c.cmd?'<pre data-cmd="'+esc(c.cmd)+'">'+esc(c.cmd)+'</pre><button class="copyFix" data-copy="'+esc(c.cmd)+'">Copy command</button>':'')
+        +'</div>';
+    }
+    html+='<div class="caveat" style="margin-top:8px">Proposals for review. Nothing in this tool writes to Azure or runs these commands; placeholders in &lt;angle brackets&gt; need your values.</div>';
+  }
+  out.innerHTML=html;
+  out.querySelectorAll(".copyFix").forEach(b=>b.onclick=(ev)=>{
+    ev.stopPropagation();
+    const txt=b.getAttribute("data-copy")||"";
+    const done=()=>{const old=b.textContent;b.textContent="Copied";setTimeout(()=>b.textContent=old,1200);};
+    if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(txt).then(done,()=>{});
+    else{const ta=document.createElement("textarea");ta.value=txt;document.body.appendChild(ta);ta.select();try{document.execCommand("copy");done();}catch(e){}document.body.removeChild(ta);}
+  });
+}''')
+
 open(SRC, "w", encoding="utf-8").write(html)
 print(f"OK — {len(applied)} patch(es) applied:")
 for a in applied:
