@@ -2631,6 +2631,15 @@ patch("P84 overview map fills the viewport height",
 '  const W=el.clientWidth||900, H=580;\n  const svg=d3.select(el).append("svg").attr("width",W).attr("height",H).style("background","var(--panel)");',
 '  const W=el.clientWidth||900, H=Math.max(580,(window.innerHeight||900)-230);\n  const svg=d3.select(el).append("svg").attr("width",W).attr("height",H).style("background","var(--panel)");')
 
+# ===================================== DEPS CLICK: SHOW DETAILS, NOT JUST JUMP
+# In the dependencies view a single click re-rooted the whole view onto the node,
+# which felt like "nothing happened / why is it there". Make a single click open
+# the details panel (what the resource is + its connections + rules) and reserve
+# double-click for navigating (re-rooting the view on it).
+patch("P85 deps single-click opens details, double-click navigates",
+'      const node=g.append("g").style("cursor","pointer").on("click",()=>{depsRoot=d.id;selected=d.id;renderAll();});',
+'      const node=g.append("g").style("cursor","pointer")\n        .on("click",(ev)=>{ev.stopPropagation();selected=d.id;renderPanel();})\n        .on("dblclick",(ev)=>{ev.stopPropagation();depsRoot=d.id;selected=d.id;renderAll();});')
+
 open(SRC, "w", encoding="utf-8").write(html)
 print(f"OK — {len(applied)} patch(es) applied:")
 for a in applied:
