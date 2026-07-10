@@ -1935,7 +1935,16 @@ function renderGraph(){
     .attr("filter","none");
   node.append("circle").attr("r",d=>Math.max(3,rOf(d)*0.30))
     .attr("fill",d=>badNodes.has(d.id)||(d.type==="group"&&d.bad)?"#DC3545":TYPES[d.type].color)
-    .attr("opacity",d=>d.type==="group"?0:0.85);
+    .attr("opacity",d=>(d.type==="group"||GLYPH[d.type])?0:0.85);
+  // Azure resource-type icon in the node centre. Uses the official icon pack when
+  // icons/manifest.json is loaded (make-icon-pack.sh), otherwise the built-in glyph.
+  node.filter(d=>d.type!=="group"&&GLYPH[d.type]).each(function(d){
+    const sz=Math.min(16,Math.max(11,rOf(d)*1.3));
+    const gg=document.createElementNS("http://www.w3.org/2000/svg","g");
+    gg.setAttribute("transform","translate("+(-sz/2)+","+(-sz/2)+")");
+    gg.innerHTML=iconSvg(d.type,badNodes.has(d.id)?"#B91C1C":TYPES[d.type].color,sz);
+    this.appendChild(gg);
+  });
   node.filter(d=>d.type==="group").append("text")
     .text(d=>d.count).attr("dy",4.5).attr("text-anchor","middle")
     .attr("fill","#1B2330").attr("font-size",d=>Math.min(16,10+Math.sqrt(d.count)/2.2))

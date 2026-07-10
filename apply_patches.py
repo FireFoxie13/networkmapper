@@ -2214,6 +2214,28 @@ patch("P72e named external providers are not collapsed into Internet",
 '  if(n.type==="ext")return "internet|all";           // public IPs collapse into one Internet node',
 '  if(n.type==="ext")return n.prov?null:"internet|all"; // Cloudflare / service-tagged endpoints stand alone; bare IPs collapse')
 
+# ================================================== RESOURCE-TYPE ICONS ON MAP
+# The Architecture view already draws per-resource icons via iconSvg() (which uses
+# the official Azure icon pack when icons/manifest.json is present, else the built-in
+# glyph). Bring the same icon into the CENTRE of every map node, Datadog-style, so a
+# resource's type reads at a glance on the graph too — not just its ring colour.
+patch("P73 resource-type icon in the centre of map nodes",
+'''  node.append("circle").attr("r",d=>Math.max(3,rOf(d)*0.30))
+    .attr("fill",d=>badNodes.has(d.id)||(d.type==="group"&&d.bad)?"#DC3545":TYPES[d.type].color)
+    .attr("opacity",d=>d.type==="group"?0:0.85);''',
+'''  node.append("circle").attr("r",d=>Math.max(3,rOf(d)*0.30))
+    .attr("fill",d=>badNodes.has(d.id)||(d.type==="group"&&d.bad)?"#DC3545":TYPES[d.type].color)
+    .attr("opacity",d=>(d.type==="group"||GLYPH[d.type])?0:0.85);
+  // Azure resource-type icon in the node centre. Uses the official icon pack when
+  // icons/manifest.json is loaded (make-icon-pack.sh), otherwise the built-in glyph.
+  node.filter(d=>d.type!=="group"&&GLYPH[d.type]).each(function(d){
+    const sz=Math.min(16,Math.max(11,rOf(d)*1.3));
+    const gg=document.createElementNS("http://www.w3.org/2000/svg","g");
+    gg.setAttribute("transform","translate("+(-sz/2)+","+(-sz/2)+")");
+    gg.innerHTML=iconSvg(d.type,badNodes.has(d.id)?"#B91C1C":TYPES[d.type].color,sz);
+    this.appendChild(gg);
+  });''')
+
 open(SRC, "w", encoding="utf-8").write(html)
 print(f"OK — {len(applied)} patch(es) applied:")
 for a in applied:
