@@ -61,8 +61,12 @@ TOTAL=$(jq 'length' "$TMP/topo.json")
 # index. If the graph query returned none, enumerate them through the management API.
 # Reader is enough; these are GET calls.
 NMGRS=$(jq -r '.[] | select(.type|ascii_downcase == "microsoft.network/networkmanagers") | .id' "$TMP/topo.json" 2>/dev/null || true)
-HAVE_RC=$(jq '[.[] | select(.type|ascii_downcase|test("securityadminconfigurations/rulecollections$"))] | length' "$TMP/topo.json" 2>/dev/null || echo 0)
-if [ -n "${NMGRS:-}" ] && [ "${HAVE_RC:-0}" -eq 0 ]; then
+# Resource Graph often returns the security-admin config and rule-collection CONTAINERS
+# but not the RULE objects inside them, so gate on the rules, not the collections.
+# Otherwise the map has the collection name (resolved from the flow log) but no rule
+# logic to review — which is exactly the "not in this scan" gap.
+HAVE_RULES=$(jq '[.[] | select(.type|ascii_downcase|test("securityadminconfigurations/rulecollections/rules$"))] | length' "$TMP/topo.json" 2>/dev/null || echo 0)
+if [ -n "${NMGRS:-}" ] && [ "${HAVE_RULES:-0}" -eq 0 ]; then
   echo "    AVNM security admin rules (Resource Graph returned none, asking the API)..."
   : > "$TMP/adminrules.json"
   API="2024-05-01"
