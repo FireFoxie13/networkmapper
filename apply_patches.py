@@ -2582,6 +2582,33 @@ patch("P81 firewall policy rules in the effective-rules panel",
       layers.push({layer:"Azure Firewall policy",from:fp.name,rules:fp.meta.rules});
   return layers;''')
 
+# ============================= EFFECTIVE RULES: INCLUDE THE ROUTE TABLE LAYER
+# The route table is the next-hop decision — a next hop of None is a silent
+# blackhole (an effective deny). Add it as a layer, in Azure's evaluation order
+# (AVNM security admin → NSG → route table → firewall), so the panel shows every
+# layer a flow crosses and where a change would need to go.
+patch("P82a route-table layer in effective rules",
+'''      for(const e2 of fullGraph.edges) if(e2.kind==="rt"&&e2.source===e.target) rtIds.add(e2.target);
+  for(const rid of rtIds){ const rt=byId.get(rid); if(rt&&rt.meta.routes&&rt.meta.routes.some(x=>/virtualappliance/i.test(x))) viaFw=true; }''',
+'''      for(const e2 of fullGraph.edges) if(e2.kind==="rt"&&e2.source===e.target) rtIds.add(e2.target);
+  for(const rid of rtIds){ const rt=byId.get(rid);
+    if(rt&&rt.meta.routes&&rt.meta.routes.length) layers.push({layer:"Route table",from:rt.name,kind:"route",routes:rt.meta.routes}); }
+  for(const rid of rtIds){ const rt=byId.get(rid); if(rt&&rt.meta.routes&&rt.meta.routes.some(x=>/virtualappliance/i.test(x))) viaFw=true; }''')
+
+patch("P82b render route-table layers in the effective-rules panel",
+'''        html+='<div class="effLayer"><div class="lh">'+(i+1)+'. '+esc(L.layer)+' — '+esc(L.from)+'</div>';
+        for(const r of [...L.rules].sort((a,b)=>a.priority-b.priority).slice(0,12)){''',
+'''        html+='<div class="effLayer"><div class="lh">'+(i+1)+'. '+esc(L.layer)+' — '+esc(L.from)+'</div>';
+        if(L.kind==="route"){
+          for(const rt of (L.routes||[]).slice(0,12)){
+            const black=/\\u2192\\s*None/i.test(rt)||/->\\s*None/i.test(rt);
+            html+='<div class="rule"><span style="color:'+(black?"var(--danger)":"var(--dim)")+'">'+(black?"\\u2715":"\\u2192")+'</span> '+esc(rt)+(black?' <span style="color:var(--danger);font-size:10px">blackhole \\u00b7 silent drop</span>':'')+'</div>';
+          }
+          if((L.routes||[]).length>12)html+='<div style="font-size:10.5px;color:var(--faint);padding-top:3px">+'+(L.routes.length-12)+' more</div>';
+          html+='</div>'; return;
+        }
+        for(const r of [...L.rules].sort((a,b)=>a.priority-b.priority).slice(0,12)){''')
+
 open(SRC, "w", encoding="utf-8").write(html)
 print(f"OK — {len(applied)} patch(es) applied:")
 for a in applied:

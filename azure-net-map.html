@@ -2535,6 +2535,8 @@ function effectiveRules(nodeId){
   for(const id of (nicIds.length?nicIds:[nodeId]))
     for(const e of fullGraph.edges) if(e.kind==="inSubnet"&&e.source===id)
       for(const e2 of fullGraph.edges) if(e2.kind==="rt"&&e2.source===e.target) rtIds.add(e2.target);
+  for(const rid of rtIds){ const rt=byId.get(rid);
+    if(rt&&rt.meta.routes&&rt.meta.routes.length) layers.push({layer:"Route table",from:rt.name,kind:"route",routes:rt.meta.routes}); }
   for(const rid of rtIds){ const rt=byId.get(rid); if(rt&&rt.meta.routes&&rt.meta.routes.some(x=>/virtualappliance/i.test(x))) viaFw=true; }
   for(const id of (nicIds.length?nicIds:[nodeId])){ const er=effRoutesBy.get(low(id)); if(er&&er.some(r=>/virtualappliance/i.test(r.nextHopType||""))) viaFw=true; }
   if(viaFw)
@@ -3235,6 +3237,14 @@ function renderPanel(){
       let effIdx=0;
       layers.forEach((L,i)=>{
         html+='<div class="effLayer"><div class="lh">'+(i+1)+'. '+esc(L.layer)+' — '+esc(L.from)+'</div>';
+        if(L.kind==="route"){
+          for(const rt of (L.routes||[]).slice(0,12)){
+            const black=/\u2192\s*None/i.test(rt)||/->\s*None/i.test(rt);
+            html+='<div class="rule"><span style="color:'+(black?"var(--danger)":"var(--dim)")+'">'+(black?"\u2715":"\u2192")+'</span> '+esc(rt)+(black?' <span style="color:var(--danger);font-size:10px">blackhole \u00b7 silent drop</span>':'')+'</div>';
+          }
+          if((L.routes||[]).length>12)html+='<div style="font-size:10.5px;color:var(--faint);padding-top:3px">+'+(L.routes.length-12)+' more</div>';
+          html+='</div>'; return;
+        }
         for(const r of [...L.rules].sort((a,b)=>a.priority-b.priority).slice(0,12)){
           const deny=/deny/i.test(r.access);
           const st=r.shadowed?{t:"Never evaluated",c:"var(--danger)"}
