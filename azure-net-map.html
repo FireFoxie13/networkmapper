@@ -1891,7 +1891,7 @@ function renderGraph(){
   const g0=viewGraph(); lastView=g0;
   const el=document.getElementById("graph");
   el.innerHTML="";
-  const W=el.clientWidth||900, H=580;
+  const W=el.clientWidth||900, H=Math.max(580,(window.innerHeight||900)-230);
   const svg=d3.select(el).append("svg").attr("width",W).attr("height",H).style("background","var(--panel)");
   arrowDefs(svg);
   const root=svg.append("g");

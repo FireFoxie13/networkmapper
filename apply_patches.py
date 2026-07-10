@@ -2624,6 +2624,13 @@ patch("P83 resource type line in the hover box",
   }
   if(d.type==="group"){''')
 
+# ============================================ BIGGER MAP: fill the viewport
+# The overview graph was a fixed 580px tall — cramped on a large estate. Grow it
+# to fill the window height (with a floor), so there's room to see more at once.
+patch("P84 overview map fills the viewport height",
+'  const W=el.clientWidth||900, H=580;\n  const svg=d3.select(el).append("svg").attr("width",W).attr("height",H).style("background","var(--panel)");',
+'  const W=el.clientWidth||900, H=Math.max(580,(window.innerHeight||900)-230);\n  const svg=d3.select(el).append("svg").attr("width",W).attr("height",H).style("background","var(--panel)");')
+
 open(SRC, "w", encoding="utf-8").write(html)
 print(f"OK — {len(applied)} patch(es) applied:")
 for a in applied:
