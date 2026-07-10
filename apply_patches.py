@@ -3342,6 +3342,77 @@ patch("F4c wire the nav ids into the cards + hint",
     +'</div>'
     +'<div class="statusline" style="margin-top:6px">Click any highlighted card or resource row to open it on the map.</div>';''')
 
+# ---------------------------------------------------------------- G — Metrics rebuild
+# The Metrics tab was a wall of numbers with nothing to act on. Rebuild it around
+# what a network engineer actually asks, in the spirit of Microsoft's Azure
+# Firewall Workbook: what is being blocked (click a row to trace it), and what is
+# the firewall actually deciding. The existing talkers / platform tables stay.
+patch("G1 Metrics: top blocked conversations + firewall decisions",
+'  html+=\'<div class="secTitle" style="margin-top:16px">Data transferred by resource</div>\';',
+'''  // ---- What is actually being blocked (the first thing an engineer asks) ----
+  {
+    const dp=deniedPaths().filter(d=>scope==="all"||(d.dst&&d.dst.subId===scope)||(d.src&&d.src.subId===scope));
+    const agg=new Map();
+    for(const d of dp){
+      const k=d.srcIp+"|"+d.dstIp+"|"+d.port+"|"+(d.proto||"?");
+      let t=agg.get(k);
+      if(!t){t={srcIp:d.srcIp,dstIp:d.dstIp,port:d.port,proto:d.proto,dst:d.dst,layer:d.layer,rule:d.rule,count:0};agg.set(k,t);}
+      t.count+=d.count||0;
+    }
+    const convos=[...agg.values()].sort((a,b)=>b.count-a.count);
+    html+='<div class="secTitle" style="margin-top:16px">Top blocked conversations'
+      +'<span style="color:var(--faint);font-weight:400;text-transform:none;letter-spacing:0"> '
+      +(convos.length?convos.length+' distinct source \\u2192 destination:port pairs':'none blocked in this window')+'</span></div>';
+    if(convos.length){
+      html+='<div class="connTable"><table><thead><tr><th>Source</th><th>Destination</th><th>Port</th><th>Blocked at</th><th>Rule</th><th class="ct">Blocked</th></tr></thead><tbody>';
+      for(const c of convos.slice(0,15)){
+        const dn=(c.dst&&c.dst.name)||c.dstIp;
+        html+='<tr class="bad" data-trace-src="'+esc(c.srcIp)+'" data-trace-dst="'+esc(c.dstIp)+'" data-trace-port="'+esc(c.port)+'" title="Trace this in Troubleshoot">'
+          +'<td class="mono">'+esc(c.srcIp)+'</td>'
+          +'<td class="nm">'+esc(dn)+' <span style="color:var(--faint)">'+esc(c.dstIp)+'</span></td>'
+          +'<td class="pt">'+esc(c.port)+'/'+esc(c.proto||"?")+'</td>'
+          +'<td>'+esc(c.layer||"?")+'</td>'
+          +'<td class="mono" style="color:var(--danger)">'+esc(c.rule||"\\u2014")+'</td>'
+          +'<td class="ct" style="font-weight:600">'+Number(c.count).toLocaleString()+'</td></tr>';
+      }
+      html+='</tbody></table></div>';
+      html+='<div class="statusline" style="margin-top:4px">Click a row to trace it in Troubleshoot and see every layer it crossed.</div>';
+    }
+  }
+  // ---- Azure Firewall decision breakdown (Firewall Workbook style) ----
+  if(fwRows.length){
+    const fw=fwInWindow();
+    const sumHits=arr=>arr.reduce((a,r)=>a+(r.hits||1),0);
+    const cnt=rx=>sumHits(fw.filter(r=>rx.test(r.table||"")));
+    html+='<div class="secTitle" style="margin-top:18px">Azure Firewall decisions '
+      +'<span style="color:var(--faint);font-weight:400;text-transform:none;letter-spacing:0">from the firewall rule logs</span></div>';
+    html+='<div class="mcards">'
+      +mcard("Allowed",sumHits(fw.filter(r=>!fwIsDeny(r))).toLocaleString(),"permitted by a rule")
+      +mcard("Denied",sumHits(fw.filter(fwIsDeny)).toLocaleString(),"blocked by a rule or default")
+      +mcard("Network rules",cnt(/AZFWNetworkRule/i).toLocaleString(),"L3 / L4 decisions")
+      +mcard("Application rules",cnt(/AZFWApplicationRule/i).toLocaleString(),"FQDN / L7 decisions")
+      +mcard("Threat intel",cnt(/AZFWThreatIntel/i).toLocaleString(),"malicious-address blocks")
+      +mcard("IDPS",cnt(/AZFWIdpsSignature/i).toLocaleString(),"signature matches")
+      +'</div>';
+  }
+  html+='<div class="secTitle" style="margin-top:16px">Data transferred by resource</div>';''')
+
+patch("G2 Metrics: blocked-conversation rows trace into Troubleshoot",
+'''  host.querySelectorAll("[data-nav]").forEach(tr=>tr.onclick=()=>{
+    const id=tr.getAttribute("data-nav"); if(!byId.has(id))return;
+    showTab("map"); selected=id; depsRoot=id; renderAll();});
+}''',
+'''  host.querySelectorAll("[data-nav]").forEach(tr=>tr.onclick=()=>{
+    const id=tr.getAttribute("data-nav"); if(!byId.has(id))return;
+    showTab("map"); selected=id; depsRoot=id; renderAll();});
+  host.querySelectorAll("[data-trace-src]").forEach(tr=>tr.onclick=()=>{
+    const s=document.getElementById("tSrc"),d=document.getElementById("tDst"),pt=document.getElementById("tPort");
+    if(s)s.value=tr.getAttribute("data-trace-src");
+    if(d)d.value=tr.getAttribute("data-trace-dst");
+    if(pt)pt.value=tr.getAttribute("data-trace-port");
+    showTab("trouble"); if(typeof renderTrace==="function")renderTrace();});
+}''')
+
 open(SRC, "w", encoding="utf-8").write(html)
 print(f"OK — {len(applied)} patch(es) applied:")
 for a in applied:
