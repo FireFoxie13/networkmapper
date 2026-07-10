@@ -3126,6 +3126,75 @@ patch("A2 denied table: Sample flows, not Example paths",
 '<th>Blocked flows</th><th>Example paths</th>',
 '<th>Blocked flows</th><th>Sample flows</th>')
 
+# ---------------------------------------------------------------- SaaS polish
+# The Analysis, Rules and Architecture tabs worked but read as raw tables. This
+# is styling only: section headers become real dividers, data tables get quieter
+# gridlines / taller rows / a soft hover, pills go pill-shaped, and the
+# architecture diagram gains depth via a drop shadow on each lane card.
+patch("D1 SaaS polish CSS for Analysis / Rules / Architecture",
+'  svg text{user-select:none}\n</style>',
+'''  svg text{user-select:none}
+
+  /* ---------- SaaS polish: Analysis / Rules / Architecture ---------- */
+  #analysisView .secTitle,#rulesView .secTitle,#archView .secTitle,#metricsView .secTitle{
+    font-size:11px;letter-spacing:.06em;text-transform:uppercase;font-weight:700;color:var(--dim);
+    border-bottom:1px solid var(--line);padding-bottom:7px;margin-top:22px;display:flex;align-items:baseline;gap:8px}
+  #analysisView table,#rulesView table{background:var(--panel)}
+  table.rules th{padding:10px 12px;font-size:9.5px;letter-spacing:.07em;border-bottom:1.5px solid var(--line2)}
+  table.rules td{padding:9px 12px}
+  table.rules tbody tr.rrow{transition:background .1s ease}
+  table.rules tbody tr.rrow:hover td{background:#F4F7FE}
+  .connTable{border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow)}
+  .connTable th{padding:9px 10px;font-size:9.5px;letter-spacing:.06em;font-weight:700;border-bottom:1.5px solid var(--line2)}
+  .connTable td{padding:8px 10px}
+  .connTable tbody tr:hover td{background:#F4F7FE}
+  .connTable tbody tr.bad:hover td{background:#FBE9EB}
+  .pill{padding:2px 9px;border-radius:999px;font-size:9.5px;box-shadow:inset 0 0 0 1px rgba(16,24,40,.05)}
+  .layerPill{border-radius:999px;padding:2px 9px}
+  .bar{height:8px;border-radius:999px}
+  .bar span{border-radius:999px}
+  .mcard{border:1px solid var(--line);box-shadow:var(--shadow);background:var(--panel)}
+  .sevKey{border:1px solid var(--line);background:var(--panel)}
+  #archView .card{border-radius:14px}
+  #archCanvas svg{display:block}
+</style>''')
+
+# D2: give the architecture lanes depth. A shadow flag on the rect helper, a
+# drop-shadow filter in the SVG defs, and the flag set on each lane card.
+patch("D2a rect helper takes a shadow flag",
+'''  const rect=(x,y,w,hh,fill,stroke,rx,dash)=>'<rect x="'+x+'" y="'+y+'" width="'+w+'" height="'+hh+'" rx="'+(rx||10)+
+      '" fill="'+fill+'" stroke="'+stroke+'" stroke-width="1"'+(dash?' stroke-dasharray="'+dash+'"':'')+'/>';''',
+'''  const rect=(x,y,w,hh,fill,stroke,rx,dash,sh)=>'<rect x="'+x+'" y="'+y+'" width="'+w+'" height="'+hh+'" rx="'+(rx||10)+
+      '" fill="'+fill+'" stroke="'+stroke+'" stroke-width="1"'+(dash?' stroke-dasharray="'+dash+'"':'')+(sh?' filter="url(#archShadow)"':'')+'/>';''')
+
+patch("D2b drop-shadow filter in the arch defs",
+'''  const defs='<defs><marker id="archArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">'
+    +'<path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>';''',
+'''  const defs='<defs><marker id="archArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">'
+    +'<path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker>'
+    +'<filter id="archShadow" x="-6%" y="-8%" width="112%" height="128%"><feDropShadow dx="0" dy="1.5" stdDeviation="2.4" flood-color="#101828" flood-opacity="0.10"/></filter>'
+    +'</defs>';''')
+
+patch("D2c edge cards cast a shadow",
+'    P.push(rect(x,y,ew,54,"#FFF7ED","#F6821F",10));',
+'    P.push(rect(x,y,ew,54,"#FFF7ED","#F6821F",10,null,true));')
+
+patch("D2d hub card casts a shadow",
+'    P.push(rect(PAD,y,W-PAD*2,hh,"#EFF6FF","#2F6FEB",12));',
+'    P.push(rect(PAD,y,W-PAD*2,hh,"#EFF6FF","#2F6FEB",12,null,true));')
+
+patch("D2e spoke cards cast a shadow",
+'    P.push(rect(x,rowY,colw,hh,"#F8FAFC",bad?"#DC3545":v.unmanaged?"#E0A02B":"#94A3B8",10));',
+'    P.push(rect(x,rowY,colw,hh,"#F8FAFC",bad?"#DC3545":v.unmanaged?"#E0A02B":"#94A3B8",10,null,true));')
+
+patch("D2f shared/hybrid bands cast a shadow",
+'    P.push(rect(x,bandY,half,hh,fill,stroke,10));',
+'    P.push(rect(x,bandY,half,hh,fill,stroke,10,null,true));')
+
+patch("D2g footer card casts a shadow",
+'  P.push(rect(PAD,y,W-PAD*2,58,"#FFFFFF","#E6E9EF",10));',
+'  P.push(rect(PAD,y,W-PAD*2,58,"#FFFFFF","#E6E9EF",10,null,true));')
+
 open(SRC, "w", encoding="utf-8").write(html)
 print(f"OK — {len(applied)} patch(es) applied:")
 for a in applied:

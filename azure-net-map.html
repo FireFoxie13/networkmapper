@@ -225,6 +225,29 @@
   #tip .tr{display:flex;justify-content:space-between;gap:12px;align-items:baseline;margin-top:4px}
   #tip .tr.bad b{color:#FF8A8A}
   svg text{user-select:none}
+
+  /* ---------- SaaS polish: Analysis / Rules / Architecture ---------- */
+  #analysisView .secTitle,#rulesView .secTitle,#archView .secTitle,#metricsView .secTitle{
+    font-size:11px;letter-spacing:.06em;text-transform:uppercase;font-weight:700;color:var(--dim);
+    border-bottom:1px solid var(--line);padding-bottom:7px;margin-top:22px;display:flex;align-items:baseline;gap:8px}
+  #analysisView table,#rulesView table{background:var(--panel)}
+  table.rules th{padding:10px 12px;font-size:9.5px;letter-spacing:.07em;border-bottom:1.5px solid var(--line2)}
+  table.rules td{padding:9px 12px}
+  table.rules tbody tr.rrow{transition:background .1s ease}
+  table.rules tbody tr.rrow:hover td{background:#F4F7FE}
+  .connTable{border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow)}
+  .connTable th{padding:9px 10px;font-size:9.5px;letter-spacing:.06em;font-weight:700;border-bottom:1.5px solid var(--line2)}
+  .connTable td{padding:8px 10px}
+  .connTable tbody tr:hover td{background:#F4F7FE}
+  .connTable tbody tr.bad:hover td{background:#FBE9EB}
+  .pill{padding:2px 9px;border-radius:999px;font-size:9.5px;box-shadow:inset 0 0 0 1px rgba(16,24,40,.05)}
+  .layerPill{border-radius:999px;padding:2px 9px}
+  .bar{height:8px;border-radius:999px}
+  .bar span{border-radius:999px}
+  .mcard{border:1px solid var(--line);box-shadow:var(--shadow);background:var(--panel)}
+  .sevKey{border:1px solid var(--line);background:var(--panel)}
+  #archView .card{border-radius:14px}
+  #archCanvas svg{display:block}
 </style>
 </head>
 <body>
@@ -3711,8 +3734,8 @@ function renderArch(){
   const W=1240, PAD=28;
   const P=[];   // svg parts
   const esc2=esc;
-  const rect=(x,y,w,hh,fill,stroke,rx,dash)=>'<rect x="'+x+'" y="'+y+'" width="'+w+'" height="'+hh+'" rx="'+(rx||10)+
-      '" fill="'+fill+'" stroke="'+stroke+'" stroke-width="1"'+(dash?' stroke-dasharray="'+dash+'"':'')+'/>';
+  const rect=(x,y,w,hh,fill,stroke,rx,dash,sh)=>'<rect x="'+x+'" y="'+y+'" width="'+w+'" height="'+hh+'" rx="'+(rx||10)+
+      '" fill="'+fill+'" stroke="'+stroke+'" stroke-width="1"'+(dash?' stroke-dasharray="'+dash+'"':'')+(sh?' filter="url(#archShadow)"':'')+'/>';
   const txt=(x,y,s,size,color,weight,anchor)=>'<text x="'+x+'" y="'+y+'" font-size="'+size+'" fill="'+color+
       '" font-weight="'+(weight||400)+'" text-anchor="'+(anchor||"start")+'" font-family="-apple-system,Segoe UI,sans-serif">'+esc2(s)+'</text>';
   const mono=(x,y,s,size,color,anchor)=>'<text x="'+x+'" y="'+y+'" font-size="'+size+'" fill="'+color+
@@ -3737,7 +3760,7 @@ function renderArch(){
   const ew=Math.min(230,(W-PAD*2-(edgeItems.length-1)*14)/edgeItems.length);
   edgeItems.forEach((e,i)=>{
     const x=PAD+i*(ew+14);
-    P.push(rect(x,y,ew,54,"#FFF7ED","#F6821F",10));
+    P.push(rect(x,y,ew,54,"#FFF7ED","#F6821F",10,null,true));
     P.push('<g transform="translate('+(x+13)+','+(y+17)+')">'+iconSvg(e.icon||"pip","#C2410C",20)+'</g>');
     P.push(txt(x+41,y+23,e.label,12.5,"#7C2D12",600));
     P.push(mono(x+41,y+39,e.sub,10,"#9A6700"));
@@ -3751,7 +3774,7 @@ function renderArch(){
     P.push(laneTitle(y-8,"HUB — INSPECTION AND SHARED EGRESS","all north-south traffic should cross this"));
     const ctrl=M.hubControls||[];
     const hh=76+(showSubnets?Math.ceil(M.hub.subnets.length/3)*30+8:0);
-    P.push(rect(PAD,y,W-PAD*2,hh,"#EFF6FF","#2F6FEB",12));
+    P.push(rect(PAD,y,W-PAD*2,hh,"#EFF6FF","#2F6FEB",12,null,true));
     P.push('<g transform="translate('+(PAD+14)+','+(y+13)+')">'+iconSvg("vnet","#1E3A8A",22)+'</g>');
     P.push(txt(PAD+44,y+26,M.hub.name,14,"#1E3A8A",600));
     P.push(mono(PAD+44,y+42,M.hub.space+"  ·  "+M.hub.sub,10.5,"#3B82F6"));
@@ -3799,7 +3822,7 @@ function renderArch(){
     const hh=54+snRows*28+(v.subnets.length>6?14:0);
     rowH=Math.max(rowH,hh);
     const bad=v.subnets.some(s=>s.bad);
-    P.push(rect(x,rowY,colw,hh,"#F8FAFC",bad?"#DC3545":v.unmanaged?"#E0A02B":"#94A3B8",10));
+    P.push(rect(x,rowY,colw,hh,"#F8FAFC",bad?"#DC3545":v.unmanaged?"#E0A02B":"#94A3B8",10,null,true));
     P.push('<g transform="translate('+(x+12)+','+(rowY+11)+')">'+iconSvg("vnet",bad?"#DC3545":"#475569",19)+'</g>');
     P.push(txt(x+38,rowY+22,v.name,12,"#1B2330",600));
     P.push(mono(x+38,rowY+36,v.space+"  ·  "+v.sub,9.5,"#98A2B0"));
@@ -3841,7 +3864,7 @@ function renderArch(){
     P.push(laneTitle(bandY-8,title,sub,x));
     const rows=Math.max(1,Math.ceil(items.length/2));
     const hh=Math.max(56,rows*44+16);
-    P.push(rect(x,bandY,half,hh,fill,stroke,10));
+    P.push(rect(x,bandY,half,hh,fill,stroke,10,null,true));
     if(!items.length)P.push(mono(x+14,bandY+30,"none found",10,tcol));
     items.slice(0,6).forEach((e,i)=>{
       const cw=(half-28-10)/2;
@@ -3858,7 +3881,7 @@ function renderArch(){
   y=bandY+Math.max(h1,h2)+30;
 
   /* ---------- footer: what this diagram asserts ---------- */
-  P.push(rect(PAD,y,W-PAD*2,58,"#FFFFFF","#E6E9EF",10));
+  P.push(rect(PAD,y,W-PAD*2,58,"#FFFFFF","#E6E9EF",10,null,true));
   const denied=fullGraph.edges.filter(e=>e.kind==="traffic"&&e.denied).length;
   const noNsg=fullGraph.nodes.filter(n=>n.type==="subnet"&&!fullGraph.edges.some(e=>e.kind==="nsg"&&e.source===n.id)).length;
   P.push(txt(PAD+14,y+21,"Reading this diagram",11,"#5A6678",700));
@@ -3868,7 +3891,9 @@ function renderArch(){
   y+=58+PAD;
 
   const defs='<defs><marker id="archArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">'
-    +'<path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>';
+    +'<path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker>'
+    +'<filter id="archShadow" x="-6%" y="-8%" width="112%" height="128%"><feDropShadow dx="0" dy="1.5" stdDeviation="2.4" flood-color="#101828" flood-opacity="0.10"/></filter>'
+    +'</defs>';
   host.innerHTML='<svg id="archSvg" viewBox="0 0 '+W+' '+y+'" width="100%" style="background:#FFFFFF;border-radius:10px">'+defs+P.join("")+'</svg>';
 
   const snTotal=(M.hub?M.hub.subnets.length:0)+M.spokes.reduce((a,v)=>a+v.subnets.length,0);

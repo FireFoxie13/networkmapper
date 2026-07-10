@@ -138,6 +138,14 @@ try:
         check("Analysis does not shrug 'not in this scan' at a denied rule",
               "is not in this scan (it may live on an NSG you cannot read)" not in ana)
 
+        # ---------- Architecture tab: depth on the lane cards ----------
+        page.click("#tabArch"); page.wait_for_timeout(900)
+        arch = page.evaluate("""() => {const s=document.getElementById('archSvg');
+            return s ? {def: s.innerHTML.includes('archShadow'),
+                        used: (s.innerHTML.match(/url\\(#archShadow\\)/g)||[]).length} : null;}""")
+        check("Architecture defines a card drop-shadow and applies it to lane cards",
+              arch and arch["def"] and arch["used"] >= 1, arch)
+
         # ---------- firewall rules rebuilt from logs, with times ----------
         # A policy whose rule collections Resource Graph did not return, as in production.
         page.goto(f"http://127.0.0.1:{PORT}/fwlog-scan.html"); page.wait_for_timeout(2400)
