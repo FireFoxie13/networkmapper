@@ -248,6 +248,10 @@
   .sevKey{border:1px solid var(--line);background:var(--panel)}
   #archView .card{border-radius:14px}
   #archCanvas svg{display:block}
+  #panel .connTable{overflow-x:auto}
+  #panel table{max-width:100%}
+  .mcard.navcard{cursor:pointer;transition:border-color .1s ease,box-shadow .1s ease}
+  .mcard.navcard:hover{border-color:var(--hi);box-shadow:0 0 0 3px rgba(47,111,235,.10)}
 </style>
 </head>
 <body>
@@ -3011,15 +3015,8 @@ function renderDeps(){
         .attr("text-anchor",side==="left"?"end":"start")
         .attr("font-family",MONO).attr("font-size",8.5).attr("fill","#98A2B0")
         .text(String(ipTxt).slice(0,26));
-      // Where does it live — subscription on one line, resource group on the next.
-      const trunc34=t2=>t2.length>34?t2.slice(0,33)+"…":t2;
-      const whereSub=nd.subId?(subNames[nd.subId]||nd.subId.slice(0,8)):"";
-      if(whereSub) halo(node.append("text")).attr("x",side==="left"?x-17:x+17).attr("y",y+25)
-        .attr("text-anchor",side==="left"?"end":"start")
-        .attr("font-size",8.5).attr("fill","#AEB7C4").text(trunc34(whereSub));
-      if(nd.rg) halo(node.append("text")).attr("x",side==="left"?x-17:x+17).attr("y",y+36)
-        .attr("text-anchor",side==="left"?"end":"start")
-        .attr("font-size",8.5).attr("fill","#AEB7C4").text(trunc34(nd.rg));
+      // Subscription / resource group / VNet now live in the hover box, so the
+      // node keeps just its name and IP — hover any node for the full detail.
     });
   };
   drawSide(sources,lx,"left");
@@ -3710,7 +3707,7 @@ function buildArch(scopeSubId){
     sub:subNames[v.subId]||v.subId||"",
     unmanaged:avnmExists&&!fullGraph.edges.some(e=>e.kind==="member"&&e.target===v.id),
     peeredToHub:hub?isPeered(v.id,hub.id):false,
-    subnets:subnetsOf(v.id).map(s=>({name:s.name,prefix:s.meta.prefix||"",badges:badgesOf(s.id),occ:occupantsOf(s.id),bad:badNodes.has(s.id)}))
+    subnets:subnetsOf(v.id).map(s=>({id:s.id,name:s.name,prefix:s.meta.prefix||"",badges:badgesOf(s.id),occ:occupantsOf(s.id),bad:badNodes.has(s.id)}))
   });
   // The controls that live in the hub. This is what an architect looks for first.
   const hubControls=[];
@@ -3741,8 +3738,9 @@ function renderArch(){
   const W=1240, PAD=28;
   const P=[];   // svg parts
   const esc2=esc;
-  const rect=(x,y,w,hh,fill,stroke,rx,dash,sh)=>'<rect x="'+x+'" y="'+y+'" width="'+w+'" height="'+hh+'" rx="'+(rx||10)+
-      '" fill="'+fill+'" stroke="'+stroke+'" stroke-width="1"'+(dash?' stroke-dasharray="'+dash+'"':'')+(sh?' filter="url(#archShadow)"':'')+'/>';
+  const rect=(x,y,w,hh,fill,stroke,rx,dash,sh,nav)=>'<rect x="'+x+'" y="'+y+'" width="'+w+'" height="'+hh+'" rx="'+(rx||10)+
+      '" fill="'+fill+'" stroke="'+stroke+'" stroke-width="1"'+(dash?' stroke-dasharray="'+dash+'"':'')+(sh?' filter="url(#archShadow)"':'')+(nav?' data-nav="'+nav+'" class="archNav"':'')+'/>';
+  const clip=(s,px)=>{const max=Math.max(3,Math.floor(px/6.6));return (s||"").length>max?(s||"").slice(0,max-1)+"\u2026":(s||"");};
   const txt=(x,y,s,size,color,weight,anchor)=>'<text x="'+x+'" y="'+y+'" font-size="'+size+'" fill="'+color+
       '" font-weight="'+(weight||400)+'" text-anchor="'+(anchor||"start")+'" font-family="-apple-system,Segoe UI,sans-serif">'+esc2(s)+'</text>';
   const mono=(x,y,s,size,color,anchor)=>'<text x="'+x+'" y="'+y+'" font-size="'+size+'" fill="'+color+
@@ -3781,7 +3779,7 @@ function renderArch(){
     P.push(laneTitle(y-8,"HUB — INSPECTION AND SHARED EGRESS","all north-south traffic should cross this"));
     const ctrl=M.hubControls||[];
     const hh=76+(showSubnets?Math.ceil(M.hub.subnets.length/3)*30+8:0);
-    P.push(rect(PAD,y,W-PAD*2,hh,"#EFF6FF","#2F6FEB",12,null,true));
+    P.push(rect(PAD,y,W-PAD*2,hh,"#EFF6FF","#2F6FEB",12,null,true,esc(M.hub.id)));
     P.push('<g transform="translate('+(PAD+14)+','+(y+13)+')">'+iconSvg("vnet","#1E3A8A",22)+'</g>');
     P.push(txt(PAD+44,y+26,M.hub.name,14,"#1E3A8A",600));
     P.push(mono(PAD+44,y+42,M.hub.space+"  ·  "+M.hub.sub,10.5,"#3B82F6"));
@@ -3799,7 +3797,7 @@ function renderArch(){
       M.hub.subnets.slice(0,9).forEach((s,i)=>{
         const w=(W-PAD*2-32-20)/3;
         const px=sx+(i%3)*(w+10), py=sy+Math.floor(i/3)*30;
-        P.push(rect(px,py,w,26,"#FFFFFF",s.bad?"#DC3545":"#BFDBFE",6));
+        P.push(rect(px,py,w,26,"#FFFFFF",s.bad?"#DC3545":"#BFDBFE",6,null,false,s.id?esc(s.id):null));
         P.push(txt(px+8,py+12,s.name,10,"#1B2330",500));
         P.push(mono(px+8,py+22,s.prefix,8.5,"#98A2B0"));
         const tags=[s.badges.nsg?"NSG":"",s.badges.rt?"UDR":""].filter(Boolean).join(" ");
@@ -3829,9 +3827,9 @@ function renderArch(){
     const hh=54+snRows*28+(v.subnets.length>6?14:0);
     rowH=Math.max(rowH,hh);
     const bad=v.subnets.some(s=>s.bad);
-    P.push(rect(x,rowY,colw,hh,"#F8FAFC",bad?"#DC3545":v.unmanaged?"#E0A02B":"#94A3B8",10,null,true));
+    P.push(rect(x,rowY,colw,hh,"#F8FAFC",bad?"#DC3545":v.unmanaged?"#E0A02B":"#94A3B8",10,null,true,esc(v.id)));
     P.push('<g transform="translate('+(x+12)+','+(rowY+11)+')">'+iconSvg("vnet",bad?"#DC3545":"#475569",19)+'</g>');
-    P.push(txt(x+38,rowY+22,v.name,12,"#1B2330",600));
+    P.push(txt(x+38,rowY+22,clip(v.name,colw-54),12,"#1B2330",600));
     P.push(mono(x+38,rowY+36,v.space+"  ·  "+v.sub,9.5,"#98A2B0"));
     if(v.unmanaged){
       P.push(rect(x+colw-96,rowY+8,86,17,"#FEF6E7","#E0A02B",8));
@@ -3840,9 +3838,9 @@ function renderArch(){
     if(showSubnets){
       let sy=rowY+46;
       v.subnets.slice(0,6).forEach(s=>{
-        P.push(rect(x+12,sy,colw-24,24,"#FFFFFF",s.bad?"#DC3545":"#E2E8F0",6));
+        P.push(rect(x+12,sy,colw-24,24,"#FFFFFF",s.bad?"#DC3545":"#E2E8F0",6,null,false,s.id?esc(s.id):null));
         P.push('<g transform="translate('+(x+18)+','+(sy+6)+')">'+iconSvg("subnet","#64748B",12)+'</g>');
-        P.push(txt(x+36,sy+11,s.name,9.5,"#1B2330",500));
+        P.push(txt(x+36,sy+11,clip(s.name,colw-70),9.5,"#1B2330",500));
         P.push(mono(x+36,sy+20,s.prefix,8.5,"#98A2B0"));
         const tags=[s.badges.nsg?"NSG":"",s.badges.rt?"UDR":""].filter(Boolean).join(" ");
         P.push(mono(x+colw-18,sy+15,tags||"no NSG",8.5,tags?"#64748B":"#DC3545","end"));
@@ -3901,7 +3899,12 @@ function renderArch(){
     +'<path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker>'
     +'<filter id="archShadow" x="-6%" y="-8%" width="112%" height="128%"><feDropShadow dx="0" dy="1.5" stdDeviation="2.4" flood-color="#101828" flood-opacity="0.10"/></filter>'
     +'</defs>';
-  host.innerHTML='<svg id="archSvg" viewBox="0 0 '+W+' '+y+'" width="100%" style="background:#FFFFFF;border-radius:10px">'+defs+P.join("")+'</svg>';
+  host.innerHTML='<svg id="archSvg" viewBox="0 0 '+W+' '+y+'" width="100%" style="background:#FFFFFF;border-radius:10px">'
+    +'<style>#archSvg text{pointer-events:none}#archSvg .archNav{cursor:pointer}#archSvg .archNav:hover{stroke-width:2.4}</style>'
+    +defs+P.join("")+'</svg>';
+  host.querySelectorAll("[data-nav]").forEach(el=>el.addEventListener("click",()=>{
+    const id=el.getAttribute("data-nav"); if(!byId.has(id))return;
+    showTab("map"); selected=id; renderAll();}));
 
   const snTotal=(M.hub?M.hub.subnets.length:0)+M.spokes.reduce((a,v)=>a+v.subnets.length,0);
   document.getElementById("archMeta").textContent=
@@ -4833,8 +4836,8 @@ function topTalkers(){
   return [...per.entries()].map(([id,v])=>({node:byId.get(id),...v}))
     .filter(x=>x.node).sort((a,b)=>(b.out+b.in)-(a.out+a.in));
 }
-function mcard(label,value,sub){
-  return '<div class="mcard"><div class="ml">'+esc(label)+'</div><div class="mv">'+esc(value)+'</div><div class="ms">'+esc(sub)+'</div></div>';
+function mcard(label,value,sub,nav){
+  return '<div class="mcard'+(nav?' navcard':'')+'"'+(nav?' data-nav="'+esc(nav)+'"':'')+'><div class="ml">'+esc(label)+'</div><div class="mv">'+esc(value)+'</div><div class="ms">'+esc(sub)+'</div></div>';
 }
 function renderMetrics(){
   const scope=document.getElementById("mScope").value;
@@ -4864,17 +4867,27 @@ function renderMetrics(){
   const worstBgp=bgp.length?Math.min(...bgp.map(v=>v.avg??100)):null;
   const lat=rows.map(r=>pick2(r,/firewalllatencypng/i)).filter(Boolean);
   const worstLat=lat.length?Math.max(...lat.map(v=>v.max??v.avg??0)):null;
+  const worstNode=(rx,mode)=>{let best=null,bv=mode==="min"?Infinity:-Infinity;
+    for(const r of rows){const v=pick2(r,rx);if(!v)continue;
+      const val=mode==="min"?(v.avg??100):(v.max??v.avg??0);
+      if(mode==="min"?val<bv:val>bv){bv=val;best=r.node;}}return best;};
+  const snatN=worstNode(/snatportutilization/i,"max");
+  const fwHealthN=worstNode(/firewallhealth/i,"min");
+  const unhealthyN=worstNode(/unhealthyhostcount/i,"max");
+  const bgpN=worstNode(/bgpavailability|arpavailability/i,"min");
+  const latN=worstNode(/firewalllatencypng/i,"max");
 
   let html='<div class="mcards">'
     +mcard("Data transferred",totalBytes?fmtBytes(totalBytes):"—","from flow logs")
     +mcard("Denied flows",String(fullGraph.edges.filter(e=>e.kind==="traffic"&&e.denied).length),"blocked paths")
-    +mcard("SNAT port peak",snatPeak!=null?snatPeak.toFixed(0)+"%":"—",snatPeak!=null&&snatPeak>=95?"exhausted — new connections may fail":"95% is exhaustion")
-    +mcard("Firewall health",worstHealth!=null?worstHealth.toFixed(0)+"%":"—",worstHealth!=null&&worstHealth<100?"degraded":"lowest observed")
-    +mcard("Unhealthy backends",String(unhealthy),"App Gateway / LB pools")
-    +mcard("Hybrid link availability",worstBgp!=null?worstBgp.toFixed(0)+"%":"—","BGP / ARP, lowest")
-    +mcard("Firewall latency peak",worstLat!=null?worstLat.toFixed(1)+" ms":"—","1-10 ms is normal")
+    +mcard("SNAT port peak",snatPeak!=null?snatPeak.toFixed(0)+"%":"—",snatPeak!=null&&snatPeak>=95?"exhausted — new connections may fail":"95% is exhaustion",snatN&&snatN.id)
+    +mcard("Firewall health",worstHealth!=null?worstHealth.toFixed(0)+"%":"—",worstHealth!=null&&worstHealth<100?"degraded — open it":"lowest observed",fwHealthN&&fwHealthN.id)
+    +mcard("Unhealthy backends",String(unhealthy),"App Gateway / LB pools",unhealthyN&&unhealthyN.id)
+    +mcard("Hybrid link availability",worstBgp!=null?worstBgp.toFixed(0)+"%":"—","BGP / ARP, lowest",bgpN&&bgpN.id)
+    +mcard("Firewall latency peak",worstLat!=null?worstLat.toFixed(1)+" ms":"—","1-10 ms is normal",latN&&latN.id)
     +mcard("Flows observed",totalFlows?totalFlows.toLocaleString():"—","24h window")
-    +'</div>';
+    +'</div>'
+    +'<div class="statusline" style="margin-top:6px">Click any highlighted card or resource row to open it on the map.</div>';
 
   html+='<div class="secTitle" style="margin-top:16px">Data transferred by resource</div>';
   if(!anyBytes){

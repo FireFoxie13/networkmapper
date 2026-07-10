@@ -68,10 +68,13 @@ try:
                   note[0]["y"] > max(t["y"] for t in namey) + 20,
                   f"note y={note[0]['y']:.0f} max node label y={max(t['y'] for t in namey):.0f}")
 
-        # location lines: subscription · resource group present for side nodes
-        check("side nodes show subscription and resource group lines",
-              "iam101 Identity Management" in joined and "iam101-delinea-prod-centralus" in joined
-              and "guss101 Directory Services" in joined and "guss101-dirsvcs-prod" in joined, joined[:600])
+        # Side nodes are decluttered: subscription and resource group moved into the
+        # hover box, so they are no longer printed beside every circle (they may still
+        # appear once in the root crumb). Names and IPs stay on the node.
+        check("side nodes still show name and IP",
+              "azh1delapp01-nic" in joined and "172.22.52.68" in joined, joined[:300])
+        check("side node labels no longer repeat the resource group per circle",
+              joined.count("iam101-delinea-prod-centralus") <= 2, joined.count("iam101-delinea-prod-centralus"))
 
         # clickable root crumb exists with pieces
         crumb = page.eval_on_selector_all('[data-test="rootCrumb"] text', "els=>els.map(t=>t.textContent)")
