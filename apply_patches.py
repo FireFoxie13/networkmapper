@@ -3084,6 +3084,48 @@ patch("C5 resource group + VNet in the hover box",
     for(const _kv of _loc)html+='<div class="tr"><span>'+_kv[0]+'</span><b style="text-align:right;max-width:210px;word-break:break-all">'+esc(_kv[1])+'</b></div>';
   }''')
 
+# ---------------------------------------------------------------- RULES: top talkers
+# Per rule, fold the sampled flows into source -> destination:port pairs and rank
+# by volume, so the busiest conversations that hit the rule surface first.
+patch("R1a rule detail aggregates top talkers",
+'      const samples=(r.samples||[]).slice(0,10);',
+'''      // Top talkers: fold the sampled flows into source \\u2192 destination:port pairs so the
+      // busiest conversations that hit this rule rank first, not just whichever was seen first.
+      const _tk=new Map();
+      for(const sf of (r.samples||[])){
+        const _k=sf.srcIp+"|"+sf.dstIp+"|"+sf.port+"|"+(sf.proto||"?");
+        let _t=_tk.get(_k);
+        if(!_t){_t={srcIp:sf.srcIp,dstIp:sf.dstIp,port:sf.port,proto:sf.proto,count:0,bytes:0,denied:false,lastTs:0,fwPolicy:sf.fwPolicy,fwCollection:sf.fwCollection,aclRule:sf.aclRule};_tk.set(_k,_t);}
+        _t.count+=sf.count||0; _t.bytes+=sf.bytes||0; if(sf.denied)_t.denied=true; if((sf.lastTs||0)>_t.lastTs)_t.lastTs=sf.lastTs||0;
+      }
+      const talkers=[..._tk.values()].sort((a,b)=>b.count-a.count);
+      const samples=talkers.slice(0,5);''')
+
+patch("R1b rule detail names the top-talkers section",
+"'<div class=\"rd-h\" style=\"margin-top:8px\">Traffic that hit this rule \\u00b7 '+esc(windowLabel())+'</div>'",
+"'<div class=\"rd-h\" style=\"margin-top:8px\">Top talkers \\u00b7 traffic that hit this rule \\u00b7 '+esc(windowLabel())+' <span style=\"color:var(--faint);font-weight:400\">top 5 by flows, source \\u2192 destination:port</span></div>'")
+
+patch("R1c rule detail counts remaining talker pairs",
+'''            + ((r.samples||[]).length>samples.length?'<div class="rd-i" style="color:var(--faint)">+'
+                +((r.samples||[]).length-samples.length)+' more</div>':'') : "")''',
+'''            + (talkers.length>samples.length?'<div class="rd-i" style="color:var(--faint)">+'
+                +(talkers.length-samples.length)+' more source \\u2192 destination pairs</div>':'') : "")''')
+
+# ---------------------------------------------------------------- ANALYSIS: clearer wording
+# "rule is not in this scan" read as a shrug. Say what actually happened, and what
+# to do about it. And "Example paths" is not a thing an operator recognises — the
+# column shows sample denied flows, so call it that.
+patch("A1 explainDeny reads like an explanation",
+'''  if(aclRule)return "rule \\""+aclRule+"\\" is not in this scan (it may live on an NSG you cannot read)";
+  return "Azure did not name a rule for this flow";''',
+'''  if(aclRule)return "Denied by rule \\""+aclRule+"\\". Azure enforced it, but this scan did not read the NSG it lives on, "
+    +"so its ports and prefixes are not shown here. Open that NSG in the portal to see the rule text.";
+  return "Azure denied this flow but did not name the rule that decided it. It is usually an NSG default deny \\u2014 nothing above allowed the flow.";''')
+
+patch("A2 denied table: Sample flows, not Example paths",
+'<th>Blocked flows</th><th>Example paths</th>',
+'<th>Blocked flows</th><th>Sample flows</th>')
+
 open(SRC, "w", encoding="utf-8").write(html)
 print(f"OK — {len(applied)} patch(es) applied:")
 for a in applied:

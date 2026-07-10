@@ -3990,7 +3990,17 @@ function renderRules(){
           +(r.group&&low(r.group)!==low(rnode?rnode.name:"")?' of group <b>'+esc(r.group)+'</b>':'')+'.</div>'
         : "";
       if(rh){ r.hits=rh.hits; r.deniedHits=rh.deniedHits; r.samples=rh.samples; }
-      const samples=(r.samples||[]).slice(0,10);
+      // Top talkers: fold the sampled flows into source \u2192 destination:port pairs so the
+      // busiest conversations that hit this rule rank first, not just whichever was seen first.
+      const _tk=new Map();
+      for(const sf of (r.samples||[])){
+        const _k=sf.srcIp+"|"+sf.dstIp+"|"+sf.port+"|"+(sf.proto||"?");
+        let _t=_tk.get(_k);
+        if(!_t){_t={srcIp:sf.srcIp,dstIp:sf.dstIp,port:sf.port,proto:sf.proto,count:0,bytes:0,denied:false,lastTs:0,fwPolicy:sf.fwPolicy,fwCollection:sf.fwCollection,aclRule:sf.aclRule};_tk.set(_k,_t);}
+        _t.count+=sf.count||0; _t.bytes+=sf.bytes||0; if(sf.denied)_t.denied=true; if((sf.lastTs||0)>_t.lastTs)_t.lastTs=sf.lastTs||0;
+      }
+      const talkers=[..._tk.values()].sort((a,b)=>b.count-a.count);
+      const samples=talkers.slice(0,5);
       // A rule that is actually denying traffic gets the same remediation the map panel shows.
       const deniedSample=(r.samples||[]).find(sf=>sf.denied)||null;
       const seenFrom=Math.min(...(r.samples||[]).map(s=>s.firstTs||Infinity));
@@ -4008,7 +4018,7 @@ function renderRules(){
         + (r.hits?('<div class="rd-i">'+Number(r.hits).toLocaleString()+(r.observed?' hits':' flows · '+fmtBytes(r.hitBytes||0))
               +(r.deniedHits?' · <span style="color:var(--danger);font-weight:600">'+Number(r.deniedHits).toLocaleString()+' denied</span>':'')+'</div>')
             : '<div class="rd-i" style="color:var(--faint)">'+(flows.length?'No flow matched this rule':'No flow logs loaded')+'</div>')
-        + (samples.length?'<div class="rd-h" style="margin-top:8px">Traffic that hit this rule \u00b7 '+esc(windowLabel())+'</div>'
+        + (samples.length?'<div class="rd-h" style="margin-top:8px">Top talkers \u00b7 traffic that hit this rule \u00b7 '+esc(windowLabel())+' <span style="color:var(--faint);font-weight:400">top 5 by flows, source \u2192 destination:port</span></div>'
             + seenLine
             + samples.map(sf=>'<div class="rd-i mono'+(sf.denied?' bad':'')+'">'
                 +(sf.lastTs?'<span style="color:var(--faint)">'+esc(fmtClock(sf.lastTs))+'</span>  ':'')
@@ -4016,8 +4026,8 @@ function renderRules(){
                 +'  '+Number(sf.count).toLocaleString()+(sf.fwPolicy?' hits':' flows')+(sf.bytes?'  '+fmtBytes(sf.bytes):'')+(sf.denied?'  DENIED':'')
                 +(sf.fwCollection?'  \u00b7 collection '+esc(sf.fwCollection):'')
                 +(sf.aclRule&&!sf.fwPolicy?'  \u00b7 Azure: '+esc(sf.aclRule):'')+'</div>').join("")
-            + ((r.samples||[]).length>samples.length?'<div class="rd-i" style="color:var(--faint)">+'
-                +((r.samples||[]).length-samples.length)+' more</div>':'') : "")
+            + (talkers.length>samples.length?'<div class="rd-i" style="color:var(--faint)">+'
+                +(talkers.length-samples.length)+' more source \u2192 destination pairs</div>':'') : "")
         +'</div></div>'
         + (samples.length?(function(){
               const kinds=[...new Set(samples.map(sf=>trafficIntent(sf.port,sf.proto).kind))];
@@ -4328,8 +4338,9 @@ function explainDeny(aclGroup,aclRule,row){
   if(d)return d.why;
   if(aclRule&&/^defaultsecurityrules|^default/i.test(aclRule))
     return "Azure's built-in default rule — nothing in your NSG allowed this, so DenyAllInBound/OutBound applied";
-  if(aclRule)return "rule \""+aclRule+"\" is not in this scan (it may live on an NSG you cannot read)";
-  return "Azure did not name a rule for this flow";
+  if(aclRule)return "Denied by rule \""+aclRule+"\". Azure enforced it, but this scan did not read the NSG it lives on, "
+    +"so its ports and prefixes are not shown here. Open that NSG in the portal to see the rule text.";
+  return "Azure denied this flow but did not name the rule that decided it. It is usually an NSG default deny \u2014 nothing above allowed the flow.";
 }
 
 /* ================= remediation: what to change, and where =================
@@ -5120,7 +5131,7 @@ function renderAnalysis(){
      + (totalDenied?Number(totalDenied).toLocaleString()+' flows blocked, grouped by the rule Azure names':'none observed in this window')
      +'</span></div>';
   if(groups.length){
-    html+='<div class="connTable"><table><thead><tr><th>Enforced at</th><th>Resource</th><th>Rule</th><th>Why it was denied</th><th>Blocked flows</th><th>Example paths</th></tr></thead><tbody>';
+    html+='<div class="connTable"><table><thead><tr><th>Enforced at</th><th>Resource</th><th>Rule</th><th>Why it was denied</th><th>Blocked flows</th><th>Sample flows</th></tr></thead><tbody>';
     for(const g of groups.slice(0,15)){
       const ex=g.paths.slice(0,3).map(x=>esc(x.srcIp)+" &rarr; "+esc(x.dstIp)+":"+esc(x.port)+"/"+esc(x.proto||"?")).join("<br>");
       html+='<tr><td class="nm"><span class="layerPill">'+esc(g.layer||"?")+'</span></td>'

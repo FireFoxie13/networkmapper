@@ -122,10 +122,21 @@ try:
         check("clicking a deny rule expands its detail", opened.get("found") and opened.get("shown"), opened)
         check("expanded rule shows the traffic that hit it",
               "traffic that hit this rule" in opened.get("txt", "").lower(), opened.get("txt", "")[:160])
+        check("expanded rule ranks its top talkers",
+              "top talkers" in opened.get("txt", "").lower(), opened.get("txt", "")[:160])
         check("expanded rule shows real flows", "172.22.52.70" in opened.get("txt", ""))
         check("expanded deny rule carries the recommended fix",
               "RECOMMENDED FIX" in opened.get("txt", "").upper() and "az network nsg rule create" in opened.get("txt", ""))
         check("rules tab still error-free", not errors, errors[:2])
+
+        # ---------- Analysis tab: clearer wording ----------
+        page.click("#tabAnalysis"); page.wait_for_timeout(1200)
+        ana = page.inner_text("#analysisView")
+        heads = page.eval_on_selector_all("#anaList th", "e=>e.map(x=>x.textContent)")
+        check("Analysis denied table labels sample flows, not 'Example paths'",
+              "Sample flows" in heads and "Example paths" not in heads, heads)
+        check("Analysis does not shrug 'not in this scan' at a denied rule",
+              "is not in this scan (it may live on an NSG you cannot read)" not in ana)
 
         # ---------- firewall rules rebuilt from logs, with times ----------
         # A policy whose rule collections Resource Graph did not return, as in production.
