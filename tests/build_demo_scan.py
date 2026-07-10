@@ -70,6 +70,22 @@ if lb:
         {"resourceId": lb["id"], "metric": "DipAvailability", "avg": 55, "max": 60, "unit": "%"},
     ]
 
+# ---- Azure's own rule recommendations (NTARuleRecommendation) ----
+p["recos"] = [
+    {"RecommendedAction": "Block", "RecommendedRuleName": "block-inbound-8080",
+     "RuleScope": "VirtualNetwork", "L4Protocol": "TCP", "DestPortsRanges": "8080",
+     "PortCategory": "NonStandard", "SrcPublicIpCidrs": "162.158.0.0/15",
+     "DestPublicIpCidrs": "", "SrcServiceTagsList": "", "DestServiceTagsList": ""},
+    {"RecommendedAction": "Allow", "RecommendedRuleName": "allow-https-cloudflare",
+     "RuleScope": "VirtualNetwork", "L4Protocol": "TCP", "DestPortsRanges": "443",
+     "PortCategory": "Web", "SrcPublicIpCidrs": "104.16.0.0/13", "DestPublicIpCidrs": "",
+     "SrcServiceTagsList": "", "DestServiceTagsList": ""},
+    {"RecommendedAction": "Advisory", "RecommendedRuleName": "review-storage-egress",
+     "RuleScope": "SubscriptionId", "L4Protocol": "TCP", "DestPortsRanges": "443",
+     "PortCategory": "Web", "SrcPublicIpCidrs": "", "DestPublicIpCidrs": "",
+     "SrcServiceTagsList": "", "DestServiceTagsList": "20.60.40.0/22 | Storage.CentralUS"},
+]
+
 # ---- an orphaned, unassociated public IP (billable, attached to nothing) ----
 p["topology"].append({
     "id": f"/subscriptions/{sub_a}/resourcegroups/iam101-delinea-prod-centralus/providers/microsoft.network/publicipaddresses/orphan-legacy-pip",

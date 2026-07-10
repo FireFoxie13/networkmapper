@@ -2236,6 +2236,43 @@ patch("P73 resource-type icon in the centre of map nodes",
     this.appendChild(gg);
   });''')
 
+# ============================================ AZURE RULE RECOMMENDATIONS (NTA)
+# Azure Traffic Analytics publishes NTARuleRecommendation: a per-traffic-pattern
+# verdict of Allow / Block / Advisory. That is Microsoft's own answer to "is this
+# rule legitimate?". generate-netmap.sh now collects it into EMBEDDED.recos;
+# surface it in the Analysis tab next to the tool's own heuristic.
+patch("P74a load rule recommendations",
+'let metricsRaw=EMBEDDED&&EMBEDDED.metrics?EMBEDDED.metrics:[];',
+'''let metricsRaw=EMBEDDED&&EMBEDDED.metrics?EMBEDDED.metrics:[];
+let recos=EMBEDDED&&EMBEDDED.recos?EMBEDDED.recos:[];''')
+
+patch("P74b Azure rule recommendations section in Analysis",
+'  const groups=deniedByRule();',
+'''  // Azure's own verdict (NTARuleRecommendation): Allow / Block / Advisory per pattern.
+  if(recos&&recos.length){
+    const AC={Allow:"#1F9D62",Block:"#B02A37",Advisory:"#9A6700"};
+    html+='<div class="secTitle" style="margin-top:14px">Azure rule recommendations'
+       +'<span style="color:var(--faint);font-weight:400;text-transform:none;letter-spacing:0"> '
+       +recos.length+" from Traffic Analytics — Microsoft's own Allow / Block / Advisory verdict on observed traffic</span></div>";
+    html+='<table class="rules"><thead><tr><th>VERDICT</th><th>PROTO</th><th>PORTS</th><th>SOURCE</th><th>DESTINATION</th><th>SCOPE</th><th>RULE</th></tr></thead><tbody>';
+    for(const r of recos.slice(0,200)){
+      const act=r.RecommendedAction||r.recommendedAction||"";
+      const col=AC[act]||"var(--dim)";
+      const src=r.SrcPublicIpCidrs||r.SrcServiceTagsList||"*";
+      const dst=r.DestPublicIpCidrs||r.DestServiceTagsList||"*";
+      const ports=String(r.DestPortsRanges||"")+(r.PortCategory?" ("+r.PortCategory+")":"");
+      html+='<tr><td><span style="display:inline-block;font-size:9.5px;font-weight:700;letter-spacing:.04em;'
+        +'text-transform:uppercase;padding:2px 7px;border-radius:9px;color:#fff;background:'+col+'">'+esc(act||"—")+'</span></td>'
+        +'<td>'+esc(r.L4Protocol||"")+'</td><td>'+esc(ports||"—")+'</td>'
+        +'<td class="mono">'+esc(String(src).slice(0,40))+'</td>'
+        +'<td class="mono">'+esc(String(dst).slice(0,40))+'</td>'
+        +'<td>'+esc(r.RuleScope||"")+'</td><td>'+esc(r.RecommendedRuleName||"")+'</td></tr>';
+    }
+    html+='</tbody></table>';
+    html+='<div style="font-size:11px;color:var(--faint);margin:4px 0 6px"><b style="color:#B02A37">Block</b> = traffic Azure judges you should not be allowing · <b style="color:#1F9D62">Allow</b> = legitimate traffic worth an explicit rule · <b style="color:#9A6700">Advisory</b> = review. Azure derives these from observed flows; cross-check against the Rules tab.</div>';
+  }
+  const groups=deniedByRule();''')
+
 open(SRC, "w", encoding="utf-8").write(html)
 print(f"OK — {len(applied)} patch(es) applied:")
 for a in applied:

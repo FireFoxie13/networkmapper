@@ -223,11 +223,40 @@ union isfuzzy=true AZFWNetworkRule, AZFWApplicationRule, AZFWNatRule, AZFWThreat
   else
     echo "      $FWN firewall rule decisions"
   fi
+
+  # ---- Azure's own rule recommendations. Traffic Analytics evaluates observed flows and
+  # publishes a verdict per traffic pattern: Allow, Block, or Advisory (review). This is
+  # Microsoft's authoritative take on "should this be allowed — is the rule legitimate?".
+  # https://learn.microsoft.com/azure/azure-monitor/reference/tables/ntarulerecommendation
+  echo "    Azure rule recommendations (NTARuleRecommendation)..."
+  RECOKQL="let W = ${FW};
+NTARuleRecommendation
+| where TimeGenerated > ago(W)
+| summarize arg_max(TimeGenerated, *) by RecommendedRuleName, RecommendedAction, RuleScope, L4Protocol, DestPortsRanges
+| project TimeGenerated, RecommendedAction, RecommendedRuleName, RuleScope, L4Protocol, DestPortsRanges, PortCategory,
+          SrcPublicIpCidrs, DestPublicIpCidrs, SrcServiceTagsList, DestServiceTagsList, SrcSubscriptionId, DestSubscriptionId
+| top 5000 by TimeGenerated"
+  : > "$TMP/recos_raw.json"
+  OLDIFS=$IFS; IFS=','
+  for WS in $WORKSPACE_ID; do
+    IFS=$OLDIFS
+    WS=$(printf '%s' "$WS" | tr -d '[:space:]')
+    [ -z "$WS" ] && continue
+    if az monitor log-analytics query -w "$WS" --analytics-query "$RECOKQL" -o json > "$TMP/reco.json" 2>/dev/null; then
+      jq -c '.[]' "$TMP/reco.json" >> "$TMP/recos_raw.json" 2>/dev/null || true
+    fi
+    IFS=','
+  done
+  IFS=$OLDIFS
+  jq -s '.' "$TMP/recos_raw.json" > "$TMP/recos.json" 2>/dev/null || echo "[]" > "$TMP/recos.json"
+  echo "    $(jq 'length' "$TMP/recos.json") rule recommendations (Allow / Block / Advisory)"
 else
   echo "    skipped (set WORKSPACE_ID to one or more Log Analytics workspace GUIDs, comma-separated)"
   echo "[]" > "$TMP/fwlogs.json"
+  echo "[]" > "$TMP/recos.json"
 fi
 [ -f "$TMP/fwlogs.json" ] || echo "[]" > "$TMP/fwlogs.json"
+[ -f "$TMP/recos.json" ] || echo "[]" > "$TMP/recos.json"
 
 echo "[5/6] Subscription names + inventory..."
 az account list --all --query "[].{subscriptionId:id,name:name}" -o json > "$TMP/subs.json" || echo "[]" > "$TMP/subs.json"
@@ -342,8 +371,9 @@ jq -n \
   --slurpfile st "$TMP/sites.json" \
   --slurpfile mt "$TMP/metrics.json" \
   --slurpfile fw "$TMP/fwlogs.json" \
+  --slurpfile rc "$TMP/recos.json" \
   --arg scanned "$STAMP" --arg scannedIso "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  '{topology:$t[0], dns:$d[0], flows:$f[0], subs:$s[0], sites:$st[0], metrics:$mt[0], fwlogs:$fw[0], scanned:$scanned, scannedIso:$scannedIso}' > "$TMP/embed.json"
+  '{topology:$t[0], dns:$d[0], flows:$f[0], subs:$s[0], sites:$st[0], metrics:$mt[0], fwlogs:$fw[0], recos:$rc[0], scanned:$scanned, scannedIso:$scannedIso}' > "$TMP/embed.json"
 
 python3 - "$TEMPLATE" "$TMP/embed.json" "$OUT" << 'PYEOF'
 import sys, json
