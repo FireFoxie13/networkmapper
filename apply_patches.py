@@ -3195,6 +3195,25 @@ patch("D2g footer card casts a shadow",
 '  P.push(rect(PAD,y,W-PAD*2,58,"#FFFFFF","#E6E9EF",10));',
 '  P.push(rect(PAD,y,W-PAD*2,58,"#FFFFFF","#E6E9EF",10,null,true));')
 
+# ---------------------------------------------------------------- E1
+# The dependency view drew its nodes but never wired the hover tooltip, so
+# drilling into a resource lost the details you get on the overview map. Wire
+# showTip on both the side nodes (nd is the full resolved node) and the root.
+patch("E1 dependency side nodes show the hover tooltip",
+'        .on("dblclick",(ev)=>{ev.stopPropagation();depsRoot=d.id;selected=d.id;renderAll();});',
+'''        .on("dblclick",(ev)=>{ev.stopPropagation();depsRoot=d.id;selected=d.id;renderAll();})
+        .on("mouseenter",(ev)=>showTip(ev,nd))
+        .on("mousemove",(ev)=>moveTip(ev))
+        .on("mouseleave",()=>hideTip());''')
+
+patch("E2 dependency root shows the hover tooltip and opens on click",
+'  const rg2=g.append("g");',
+'''  const rg2=g.append("g").style("cursor","pointer")
+    .on("click",(ev)=>{ev.stopPropagation();selected=root.id;renderPanel();})
+    .on("mouseenter",(ev)=>showTip(ev,root))
+    .on("mousemove",(ev)=>moveTip(ev))
+    .on("mouseleave",()=>hideTip());''')
+
 open(SRC, "w", encoding="utf-8").write(html)
 print(f"OK — {len(applied)} patch(es) applied:")
 for a in applied:

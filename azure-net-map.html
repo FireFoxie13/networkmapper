@@ -2993,7 +2993,10 @@ function renderDeps(){
         denyNotes.push("blocked at "+(DENY_LAYER[d.blockLayer]||"?")+(d.blockGroup?" "+d.blockGroup:"")+(d.blockRule?" / "+d.blockRule:""));
       const node=g.append("g").style("cursor","pointer")
         .on("click",(ev)=>{ev.stopPropagation();selected=d.id;renderPanel();})
-        .on("dblclick",(ev)=>{ev.stopPropagation();depsRoot=d.id;selected=d.id;renderAll();});
+        .on("dblclick",(ev)=>{ev.stopPropagation();depsRoot=d.id;selected=d.id;renderAll();})
+        .on("mouseenter",(ev)=>showTip(ev,nd))
+        .on("mousemove",(ev)=>moveTip(ev))
+        .on("mouseleave",()=>hideTip());
       node.append("circle").attr("cx",x).attr("cy",y).attr("r",13)
         .attr("fill","#FFFFFF")
         .attr("stroke",(badNodes.has(d.id)||d.denied)?"#DC3545":impairedNodes.has(d.id)?"#E0A02B":(d.total>0)?"#2FA36A":"#C4CCD6").attr("stroke-width",2);
@@ -3029,7 +3032,11 @@ function renderDeps(){
   }
 
   // root
-  const rg2=g.append("g");
+  const rg2=g.append("g").style("cursor","pointer")
+    .on("click",(ev)=>{ev.stopPropagation();selected=root.id;renderPanel();})
+    .on("mouseenter",(ev)=>showTip(ev,root))
+    .on("mousemove",(ev)=>moveTip(ev))
+    .on("mouseleave",()=>hideTip());
   rg2.append("circle").attr("cx",cx).attr("cy",cy).attr("r",26)
     .attr("fill","#FFFFFF")
     .attr("stroke",badNodes.has(root.id)?"#DC3545":impairedNodes.has(root.id)?"#E0A02B":"#2FA36A").attr("stroke-width",3);
