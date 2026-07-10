@@ -2363,6 +2363,41 @@ patch("P76c deny detail in the node hover box",
         }
       }''')
 
+# ============================================== MAP DECLUTTER: DROP EDGE PROSE
+# The long "blocked at ..." / "impaired: ..." strings that were drawn on the edges
+# are now fully carried by the node hover box (deny layer + rule) and the amber
+# ring, so remove them from the map entirely — no more words sprawled across it.
+patch("P77 remove blocked-at / impaired edge labels from the map",
+'''  const lbl2=halo(root.append("g").selectAll("text")
+    .data(links.filter(d=>(d.denied&&(d.blockRule||d.blockGroup))||d.impaired)).join("text"))''',
+'''  const lbl2=halo(root.append("g").selectAll("text")
+    .data([]).join("text"))''')
+
+# ============================================= ANALYSIS TAB: COMPACT THE INTRO
+# The five-line severity explainer was a wall of text at the top of Analysis.
+# Replace it with a one-line severity strip and fold the full explanation into a
+# collapsible, the same pattern used under the map.
+patch("P78 compact the Analysis severity legend",
+'''  html+='<div class="sevKey">'
+    +'<div><span class="fb high">High</span> Broken or exposed right now: traffic is being blocked, a management port is open to the internet, SNAT ports are exhausted, a backend is unhealthy.</div>'
+    +'<div><span class="fb warn">Warning</span> Configuration that is wrong or ineffective: a rule that can never match, an NSG allow that AVNM overrides, a VNet outside AVNM, a subnet with no NSG.</div>'
+    +'<div><span class="fb info">Info</span> Hygiene: unattached NSGs, rules that saw no traffic, subnets with no route table. Worth cleaning up, not urgent.</div>'
+    +'<div style="color:var(--faint);margin-top:2px"><b>Severity is not traffic volume.</b> For top talkers use the Metrics tab; for the busiest rules, sort the Rules tab by Traffic.</div>'
+    +'<div style="color:var(--faint)"><b style="color:#B02A37">Denied</b> = a rule said no, and Azure names it. <b style="color:#9A6700">Impaired</b> = nothing denied it, the path cannot complete. Different colours on the map, different fixes.</div>'
+    +'</div>';''',
+'''  html+='<div class="sevKey" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">'
+    +'<span class="fb high">High</span><span style="color:var(--faint)">broken or exposed now</span>'
+    +'<span class="fb warn">Warning</span><span style="color:var(--faint)">wrong or ineffective config</span>'
+    +'<span class="fb info">Info</span><span style="color:var(--faint)">hygiene</span>'
+    +'<details style="margin-left:auto"><summary style="cursor:pointer;color:var(--dim);font-weight:600;font-size:11px;list-style:none">What these mean</summary>'
+    +'<div style="margin-top:7px;line-height:1.55;max-width:900px;font-weight:400">'
+    +'<div><b>High</b> — traffic blocked now, a management port open to the internet, SNAT exhausted, a backend unhealthy.</div>'
+    +'<div><b>Warning</b> — a rule that can never match, an NSG allow that AVNM overrides, a VNet outside AVNM, a subnet with no NSG.</div>'
+    +'<div><b>Info</b> — unattached NSGs, rules that saw no traffic, subnets with no route table.</div>'
+    +"<div style=\\"color:var(--faint);margin-top:3px\\"><b>Severity is not volume</b> — for top talkers use Metrics; for the busiest rules sort Rules by Traffic. <b style=\\"color:#B02A37\\">Denied</b> = a rule said no. <b style=\\"color:#9A6700\\">Impaired</b> = nothing denied it, the path cannot complete.</div>"
+    +'</div></details>'
+    +'</div>';''')
+
 open(SRC, "w", encoding="utf-8").write(html)
 print(f"OK — {len(applied)} patch(es) applied:")
 for a in applied:
