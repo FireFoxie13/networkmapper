@@ -302,6 +302,11 @@ try:
         oldvm = panel(ids["azh5dr-old01"])
         check("Check3: a stopped VM is flagged as impaired",
               "VM deallocated" in oldvm and "not running" in oldvm)
+        tip = page.evaluate("""(nm)=>{const d=fullGraph.nodes.find(n=>n.name===nm);
+            showTip({clientX:100,clientY:100},d);return document.getElementById('tip').innerText;}""",
+            "azh5pcosql01f")
+        check("Check3: hover box names type, resource group and VNet for a node",
+              "Virtual machine" in tip and "azh5-sql-dr-westus" in tip and "azh5-sql-dr-vnet" in tip)
 
         # ---------- Check 4: "it is not the network" verdicts ----------
         openv = trace("172.21.10.10", "172.20.10.20", 443)

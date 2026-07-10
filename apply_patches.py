@@ -3067,6 +3067,23 @@ patch("C4c causes + fix box + copy wiring",
   });
 }''')
 
+# ---------------------------------------------------------------- C5
+# In the hover box, name where the resource lives: subscription, resource group
+# and VNet — so an expanded cluster reads as "azh5pcosql01f (Virtual machine ·
+# in azh5-sql-dr-vnet)" without opening the panel.
+patch("C5 resource group + VNet in the hover box",
+'''+(extra?" \\u00b7 "+esc(extra):"")+'</div>';
+  }''',
+'''+(extra?" \\u00b7 "+esc(extra):"")+'</div>';
+    const _vo=vnetOfCache||computeVnetOf();
+    const _loc=[];
+    if(d.subId&&typeof subNames!=="undefined"&&subNames[d.subId])_loc.push(["Subscription",subNames[d.subId]]);
+    if(d.rg)_loc.push(["Resource group",d.rg]);
+    const _vid=_vo.get(d.id), _vn=(_vid&&typeof byId!=="undefined"&&byId)?byId.get(_vid):null;
+    if(_vn&&_vn.id!==d.id&&_vn.name)_loc.push(["VNet",_vn.name]);
+    for(const _kv of _loc)html+='<div class="tr"><span>'+_kv[0]+'</span><b style="text-align:right;max-width:210px;word-break:break-all">'+esc(_kv[1])+'</b></div>';
+  }''')
+
 open(SRC, "w", encoding="utf-8").write(html)
 print(f"OK — {len(applied)} patch(es) applied:")
 for a in applied:

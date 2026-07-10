@@ -1950,6 +1950,13 @@ function showTip(ev,d){
     const ip=(d.meta&&(d.meta.ips||d.meta.ip||d.meta.privateIp||d.meta.prefix))||"";
     const extra=(d.meta&&(d.meta.provider||d.meta.serviceTag||d.meta.cname))||"";
     html+='<div style="font-size:10.5px;color:#9AA4B5;font-weight:400;margin:-2px 0 6px">'+esc(sub)+(ip?" \u00b7 "+esc(ip):"")+(extra?" \u00b7 "+esc(extra):"")+'</div>';
+    const _vo=vnetOfCache||computeVnetOf();
+    const _loc=[];
+    if(d.subId&&typeof subNames!=="undefined"&&subNames[d.subId])_loc.push(["Subscription",subNames[d.subId]]);
+    if(d.rg)_loc.push(["Resource group",d.rg]);
+    const _vid=_vo.get(d.id), _vn=(_vid&&typeof byId!=="undefined"&&byId)?byId.get(_vid):null;
+    if(_vn&&_vn.id!==d.id&&_vn.name)_loc.push(["VNet",_vn.name]);
+    for(const _kv of _loc)html+='<div class="tr"><span>'+_kv[0]+'</span><b style="text-align:right;max-width:210px;word-break:break-all">'+esc(_kv[1])+'</b></div>';
   }
   if(d.type==="group"){
     html+='<div class="tr"><span>Resources</span><b>'+d.count+'</b></div>';
