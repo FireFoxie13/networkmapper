@@ -2528,6 +2528,18 @@ function effectiveRules(nodeId){
     for(const e of fullGraph.edges) if(e.kind==="nsg"&&e.source===id){
       const g=byId.get(e.target); if(g&&g.meta.rules)layers.push({layer:"NIC NSG",from:g.name,rules:g.meta.rules});
     }
+  // Azure Firewall policy rules, when egress from this resource is steered to a firewall
+  // (a next hop of VirtualAppliance in an authored UDR or the effective route table).
+  let viaFw=false;
+  const rtIds=new Set();
+  for(const id of (nicIds.length?nicIds:[nodeId]))
+    for(const e of fullGraph.edges) if(e.kind==="inSubnet"&&e.source===id)
+      for(const e2 of fullGraph.edges) if(e2.kind==="rt"&&e2.source===e.target) rtIds.add(e2.target);
+  for(const rid of rtIds){ const rt=byId.get(rid); if(rt&&rt.meta.routes&&rt.meta.routes.some(x=>/virtualappliance/i.test(x))) viaFw=true; }
+  for(const id of (nicIds.length?nicIds:[nodeId])){ const er=effRoutesBy.get(low(id)); if(er&&er.some(r=>/virtualappliance/i.test(r.nextHopType||""))) viaFw=true; }
+  if(viaFw)
+    for(const fp of fullGraph.nodes.filter(x=>x.type==="fwrcg"&&x.meta.rules&&x.meta.rules.length))
+      layers.push({layer:"Azure Firewall policy",from:fp.name,rules:fp.meta.rules});
   return layers;
 }
 

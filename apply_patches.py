@@ -2552,6 +2552,36 @@ patch("P80k syncWindowControls keeps all three selects in step",
     const cc=document.getElementById(cid); if(cc)cc.style.display=(v==="custom")?"inline-flex":"none";
   }''')
 
+# ==================================== EFFECTIVE RULES: INCLUDE FIREWALL LAYER
+# The effective-rules panel already pulls the AVNM security admin rules and the
+# NSG rules that apply to a resource, in evaluation order. Add the Azure Firewall
+# policy rules too, when the resource's routes (authored UDR or the effective
+# table) steer egress to a firewall — so for a denied flow you can see all three
+# rule layers together and where an allow would need to go to unblock it.
+patch("P81 firewall policy rules in the effective-rules panel",
+'''  for(const id of nicIds)
+    for(const e of fullGraph.edges) if(e.kind==="nsg"&&e.source===id){
+      const g=byId.get(e.target); if(g&&g.meta.rules)layers.push({layer:"NIC NSG",from:g.name,rules:g.meta.rules});
+    }
+  return layers;''',
+'''  for(const id of nicIds)
+    for(const e of fullGraph.edges) if(e.kind==="nsg"&&e.source===id){
+      const g=byId.get(e.target); if(g&&g.meta.rules)layers.push({layer:"NIC NSG",from:g.name,rules:g.meta.rules});
+    }
+  // Azure Firewall policy rules, when egress from this resource is steered to a firewall
+  // (a next hop of VirtualAppliance in an authored UDR or the effective route table).
+  let viaFw=false;
+  const rtIds=new Set();
+  for(const id of (nicIds.length?nicIds:[nodeId]))
+    for(const e of fullGraph.edges) if(e.kind==="inSubnet"&&e.source===id)
+      for(const e2 of fullGraph.edges) if(e2.kind==="rt"&&e2.source===e.target) rtIds.add(e2.target);
+  for(const rid of rtIds){ const rt=byId.get(rid); if(rt&&rt.meta.routes&&rt.meta.routes.some(x=>/virtualappliance/i.test(x))) viaFw=true; }
+  for(const id of (nicIds.length?nicIds:[nodeId])){ const er=effRoutesBy.get(low(id)); if(er&&er.some(r=>/virtualappliance/i.test(r.nextHopType||""))) viaFw=true; }
+  if(viaFw)
+    for(const fp of fullGraph.nodes.filter(x=>x.type==="fwrcg"&&x.meta.rules&&x.meta.rules.length))
+      layers.push({layer:"Azure Firewall policy",from:fp.name,rules:fp.meta.rules});
+  return layers;''')
+
 open(SRC, "w", encoding="utf-8").write(html)
 print(f"OK — {len(applied)} patch(es) applied:")
 for a in applied:
