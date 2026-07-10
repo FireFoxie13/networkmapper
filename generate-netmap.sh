@@ -132,17 +132,19 @@ if [ -n "${WORKSPACE_ID:-}" ]; then
   # end (e.g. "Cloudflare", "Storage.centralus") instead of a bare IP.
   KQL="let W = ${FW};
 let base = NTANetAnalytics
-| where TimeGenerated > ago(W) and SubType == 'FlowLog'
+// Docs give SubType as 'Flowlog' and FlowStatus as Allowed/Denied; KQL == is
+// case-sensitive, so match case-insensitively (=~ / !~) to survive either casing.
+| where TimeGenerated > ago(W) and SubType =~ 'FlowLog'
 | extend SrcIp  = iif(isempty(SrcIp),  extract(@'^\s*([0-9A-Fa-f:.]+)', 1, tostring(SrcPublicIps)),  SrcIp)
 | extend DestIp = iif(isempty(DestIp), extract(@'^\s*([0-9A-Fa-f:.]+)', 1, tostring(DestPublicIps)), DestIp)
 | where isnotempty(SrcIp) and isnotempty(DestIp);
 let denied = base
-| where FlowStatus == 'Denied'
+| where FlowStatus =~ 'Denied'
 | summarize F = count() by SrcIp, DestIp, DestPort, L4Protocol, FlowStatus
 | top 3000 by F
 | project SrcIp, DestIp, DestPort, L4Protocol, FlowStatus;
 let allowed = base
-| where FlowStatus != 'Denied'
+| where FlowStatus !~ 'Denied'
 | summarize F = count() by SrcIp, DestIp, DestPort, L4Protocol, FlowStatus
 | top 2000 by F
 | project SrcIp, DestIp, DestPort, L4Protocol, FlowStatus;
