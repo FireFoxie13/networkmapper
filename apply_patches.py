@@ -2398,6 +2398,14 @@ patch("P78 compact the Analysis severity legend",
     +'</div></details>'
     +'</div>';''')
 
+# =============================================== METRICS TAB: REAL SORT KEYS
+# The sort dropdown offered CPU / network / disk, which don't match the network
+# metrics actually collected (SNAT, availability, health, unhealthy hosts), so the
+# sort did nothing. Replace with keys that match the real metric names.
+patch("P79 metrics sort by real network metrics",
+'<select id="mSort"><option value="cpu">Sort by CPU</option><option value="network">Sort by network</option><option value="disk">Sort by disk</option></select>',
+'<select id="mSort"><option value="snatport">Sort by SNAT utilization</option><option value="availability">Sort by availability</option><option value="firewallhealth">Sort by firewall health</option><option value="unhealthy">Sort by unhealthy hosts</option><option value="latency">Sort by latency</option></select>')
+
 open(SRC, "w", encoding="utf-8").write(html)
 print(f"OK — {len(applied)} patch(es) applied:")
 for a in applied:
