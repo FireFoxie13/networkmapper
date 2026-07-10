@@ -2015,6 +2015,1186 @@ patch('P62d the expanded rule explains why it has no traffic',
 '  if(!samples.length)\n    return h+\'<div style="font-size:10.5px;color:var(--faint)">\'\n      +(flows.length?"No flow in this window matched this rule.":"No flow logs loaded, so rule traffic cannot be shown.")+\'</div>\';',
 '  if(!samples.length){\n    const why = (r.admin&&isAllow(r))\n      ? "Azure names the rule that denied a flow, never the one that allowed it, so traffic cannot be attributed to an AVNM allow rule. This does not mean it is unused."\n      : (flows.length?"No flow in this window matched this rule.":"No flow logs loaded, so rule traffic cannot be shown.");\n    return h+\'<div style="font-size:10.5px;color:var(--faint);line-height:1.45">\'+esc(why)+\'</div>\';\n  }')
 
+# ========================================================= DATADOG HEALTH RINGS
+# Datadog CNM colours a node's ring by HEALTH (green healthy / red alerting /
+# grey unknown), with the resource type shown by the centre icon. This tool
+# coloured the ring by resource TYPE. Move health onto the ring and keep type on
+# the centre dot + legend + tables, so nothing is lost. Honest about unknowns:
+# a node with no observed traffic gets a neutral grey ring, not a green one.
+patch("P70a overview health rings (type stays on the centre dot)",
+"""  node.append("circle").attr("r",rOf)
+    .attr("stroke-dasharray",d=>(d.type==="ext"||d.groupKey==="internet|all")?"5 3":"none")
+    .attr("fill",d=>(!badNodes.has(d.id)&&impairedNodes.has(d.id))?"#FFFBF2":"#FFFFFF")
+    .attr("stroke",d=>badNodes.has(d.id)||(d.type==="group"&&d.bad)?"#DC3545":TYPES[d.type].color)""",
+"""  // Datadog-style health ring: red = denied traffic seen, amber = impaired path,
+  // green = observed (allowed) traffic, grey = no signal. Resource TYPE stays on
+  // the centre dot and the legend/tables, so type colouring is preserved.
+  const trafficNodes=new Set();
+  for(const l of links){ if(l.kind==="traffic"&&!l.denied){ trafficNodes.add(l.source.id||l.source); trafficNodes.add(l.target.id||l.target); } }
+  const healthColor=d=>badNodes.has(d.id)?"#DC3545":impairedNodes.has(d.id)?"#E0A02B":trafficNodes.has(d.id)?"#2FA36A":"#C4CCD6";
+  node.append("circle").attr("r",rOf)
+    .attr("stroke-dasharray",d=>(d.type==="ext"||d.groupKey==="internet|all")?"5 3":"none")
+    .attr("fill",d=>(!badNodes.has(d.id)&&impairedNodes.has(d.id))?"#FFFBF2":"#FFFFFF")
+    .attr("stroke",d=>d.type==="group"?(d.bad?"#DC3545":TYPES[d.type].color):healthColor(d))""")
+
+# Dependencies view (Datadog's single-service map): same health colouring on the
+# side nodes and the root, type still carried by each node's centre dot.
+patch("P70b deps side-node health rings",
+'.attr("stroke",badNodes.has(d.id)?"#DC3545":TYPES[nd.type].color).attr("stroke-width",2);',
+'.attr("stroke",(badNodes.has(d.id)||d.denied)?"#DC3545":impairedNodes.has(d.id)?"#E0A02B":(d.total>0)?"#2FA36A":"#C4CCD6").attr("stroke-width",2);')
+
+patch("P70c deps root health ring",
+'.attr("stroke",badNodes.has(root.id)?"#DC3545":TYPES[root.type].color).attr("stroke-width",3);',
+'.attr("stroke",badNodes.has(root.id)?"#DC3545":impairedNodes.has(root.id)?"#E0A02B":"#2FA36A").attr("stroke-width",3);')
+
+# Legend: spell out that the node ring encodes health, so green/red/grey read.
+patch("P70d node-ring health legend",
+'''          <span class="chip"><i style="height:0;border-top:2px dashed var(--danger);width:16px;background:none"></i> denied</span>
+        </div>''',
+'''          <span class="chip"><i style="height:0;border-top:2px dashed var(--danger);width:16px;background:none"></i> denied</span>
+          <span class="chip" style="margin-left:8px"><b style="color:var(--dim);font-weight:600">Node ring = health</b></span>
+          <span class="chip"><i style="width:11px;height:11px;border-radius:50%;border:2px solid #2FA36A;background:none"></i> healthy</span>
+          <span class="chip"><i style="width:11px;height:11px;border-radius:50%;border:2px solid #DC3545;background:none"></i> denied</span>
+          <span class="chip"><i style="width:11px;height:11px;border-radius:50%;border:2px solid #E0A02B;background:none"></i> impaired</span>
+          <span class="chip"><i style="width:11px;height:11px;border-radius:50%;border:2px solid #C4CCD6;background:none"></i> no signal</span>
+        </div>''')
+
+# ==================================================== MAP CLARITY & DECLUTTER
+# P71a: the overview link aggregation copied blockRule/blockGroup but not
+# blockLayer (same bug class P1 fixed for the deps view), so the on-map deny
+# label rendered "blocked at ?" instead of "blocked at Route table / ...".
+patch("P71a carry blockLayer through overview aggregation (fixes 'blocked at ?')",
+'''    if(e.kind==="traffic"){a.total+=e.total||1;if(e.denied)a.denied=true;
+      if(e.blockRule&&!a.blockRule){a.blockRule=e.blockRule;a.blockGroup=e.blockGroup;}
+      for(const r of (e.rows||[]))a.ports.add(":"+r.port);}''',
+'''    if(e.kind==="traffic"){a.total+=e.total||1;if(e.denied)a.denied=true;
+      if(e.blockRule&&!a.blockRule){a.blockRule=e.blockRule;a.blockGroup=e.blockGroup;}
+      if(e.blockLayer&&!a.blockLayer)a.blockLayer=e.blockLayer;
+      for(const r of (e.rows||[]))a.ports.add(":"+r.port);}''')
+
+patch("P71a2 expose blockLayer on the built link",
+'    blockRule:a.blockRule||"", blockGroup:a.blockGroup||"",',
+'    blockRule:a.blockRule||"", blockGroup:a.blockGroup||"", blockLayer:a.blockLayer||"",')
+
+# P71b: the overview drew every port label AND every long "blocked at ..." string
+# on top of the graph at all times, so a busy map turned into a wall of text.
+# Datadog keeps the map clean and reveals detail on hover. Hide both label layers
+# by default and light up only the hovered node's edges. Nothing is lost — the
+# panel and the dependencies view still carry the full text.
+patch("P71b1 port labels hidden until hover",
+'    .attr("text-anchor","middle").attr("opacity",.9);',
+'    .attr("text-anchor","middle").attr("opacity",0);')
+
+patch("P71b2 blocked-at labels hidden until hover",
+'    .attr("text-anchor","middle").attr("opacity",.95);',
+'    .attr("text-anchor","middle").attr("opacity",0);')
+
+patch("P71b3 hover reset also clears both label layers",
+'link.attr("opacity",d=>d.denied?.95:d.kind==="traffic"?.7:.5);lbl.attr("opacity",.9);return;}',
+'link.attr("opacity",d=>d.denied?.95:d.kind==="traffic"?.7:.5);lbl.attr("opacity",0);lbl2.attr("opacity",0);return;}')
+
+patch("P71b4 hover reveals both label layers for the focused node",
+'    lbl.attr("opacity",d=>{const s2=d.source.id||d.source,t2=d.target.id||d.target;return (s2===id||t2===id)?1:.05;});',
+'''    lbl.attr("opacity",d=>{const s2=d.source.id||d.source,t2=d.target.id||d.target;return (s2===id||t2===id)?1:.05;});
+    lbl2.attr("opacity",d=>{const s2=d.source.id||d.source,t2=d.target.id||d.target;return (s2===id||t2===id)?1:0;});''')
+
+# P71c: the three stacked prose paragraphs under the map read as a wall of text.
+# Fold the explanation into one collapsible "How to read this map" disclosure
+# (native <details>, no JS), so the default view stays clean and professional.
+patch("P71c fold map prose into a collapsible",
+'''        <div class="canvasHint" style="border-top:0;padding-top:0;color:var(--faint)">
+          <span><b>Moving dots = flows Azure actually recorded</b>, travelling source → destination. Dot count and line width scale with volume. A plain line means connected in configuration, with nothing recorded flowing.</span>
+          <span><b>Red = denied.</b> A rule said no. Dots stop halfway and the line reads <i>blocked at &lt;policy or NSG&gt; / &lt;rule&gt;</i>.</span>
+          <span><b>Amber = impaired.</b> Nothing denied it, but the path cannot complete: an empty backend pool, a failing health probe, SNAT exhaustion, a peering that never connected, a blackhole route, or a destination that never answered.</span>
+        </div>
+        <div class="canvasHint" style="border-top:0;padding-top:0;color:var(--faint)">
+          <span><b>Numbers:</b> inside a circle = resources in that cluster.</span>
+          <span><b>×N</b> on a line = N separate links collapsed into one.</span>
+          <span>Ports (<b>:53</b>) and flow counts label traffic lines only.</span>
+        </div>''',
+'''        <details class="canvasHint" style="border-top:0;padding-top:0;color:var(--faint);display:block">
+          <summary style="cursor:pointer;color:var(--dim);font-weight:600">How to read this map</summary>
+          <div style="display:flex;flex-direction:column;gap:5px;margin-top:6px;line-height:1.5;max-width:1100px">
+            <span><b>Line width</b> = traffic volume · <b>moving dots</b> show direction, source → destination. A plain line is a configuration link with nothing flowing.</span>
+            <span><b style="color:var(--danger)">Red</b> = a rule denied the flow — hover the edge to see the layer and rule. <b style="color:var(--warn)">Amber</b> = impaired: nothing denied it, but the path can\\'t complete (empty backend pool, failing health probe, SNAT exhaustion, an unconnected peering, a blackhole route, or an endpoint that never answered).</span>
+            <span><b>Number in a circle</b> = resources in that cluster · <b>×N</b> = N links collapsed into one · ports (<b>:443</b>) and flow counts label traffic edges on hover.</span>
+          </div>
+        </details>''')
+
+# P71d: point people at the hover interaction, and drop the now-redundant inline
+# "width = volume · dots = direction" from the traffic chip.
+patch("P71d intro line names the hover interaction",
+'          <span>Scroll to zoom · drag to move · click a node for actions</span>',
+'          <span>Scroll to zoom · drag to pan · click a node for actions · <b style="color:var(--dim)">hover a node to reveal its ports and the rule that blocked it</b></span>')
+
+patch("P71d2 shorten the traffic chip",
+'          <span class="chip"><i style="background:var(--edgeTraffic);height:3px"></i> observed traffic · width = volume · dots = direction</span>',
+'          <span class="chip"><i style="background:var(--edgeTraffic);height:3px"></i> observed traffic</span>')
+
+# ============================================= EXTERNAL / PUBLIC CONNECTIONS
+# Task 1 companion (HTML side). The fixed KQL now delivers public/external flows
+# with a real address plus Azure's own enrichment (service tag, country). Parse
+# those, and NAME the far end — Cloudflare (published CIDRs), the Azure service
+# tag Azure attached, or at least the country — instead of collapsing every
+# public IP into one anonymous "Internet" node. This is what lets the map answer
+# "is this resource talking to Cloudflare?".
+
+# P72a1: recover the public address when SrcIp/DestIp is blank, and add the parse
+# helpers. (Belt-and-braces with the KQL, and it makes public flows renderable
+# straight from raw NTANetAnalytics rows too.)
+patch("P72a1 public-IP fallback in the flow normalizer",
+'''    if(r&&isIp(r.src)&&isIp(r.dst)&&typeof r.port==="number")return r; // already normalized
+    return {
+      src:pick(r,["SrcIp","SrcIP","SourceIP","srcip_s","src"]),
+      dst:pick(r,["DestIp","DstIp","DestIP","destip_s","dst"]),''',
+'''    if(r&&isIp(r.src)&&isIp(r.dst)&&typeof r.port==="number")return r; // already normalized
+    // AzurePublic / ExternalPublic flows report the far end in Src/DestPublicIps, not
+    // Src/DestIp (bar-delimited, first token = IP). Azure also tags the owner and country.
+    const firstIp=s=>{const m=String(s||"").match(/([0-9A-Fa-f:.]+)/);return m&&isIp(m[1])?m[1]:"";};
+    const lastSeg=s=>{const p=String(s||"").split("|");return p.length>1?p[p.length-1].trim():"";};
+    return {
+      src:pick(r,["SrcIp","SrcIP","SourceIP","srcip_s","src"])||firstIp(pick(r,["SrcPublicIps"])),
+      dst:pick(r,["DestIp","DstIp","DestIP","destip_s","dst"])||firstIp(pick(r,["DestPublicIps"])),''')
+
+# P72a2: carry the service tag and country onto each flow for labelling.
+patch("P72a2 carry service tag / country on flows",
+'''      flowType:pick(r,["FlowType"])||"",
+      peId:pick(r,["PrivateEndpointResourceId"])||"",''',
+'''      flowType:pick(r,["FlowType"])||"",
+      srcTag:lastSeg(pick(r,["SrcServiceTags"])),
+      dstTag:lastSeg(pick(r,["DestServiceTags"])),
+      country:pick(r,["Country"])||"",
+      peId:pick(r,["PrivateEndpointResourceId"])||"",''')
+
+# P72b: the classifier + Cloudflare's published ranges.
+patch("P72b external-endpoint classifier",
+'function attachTraffic(graph,flows){',
+'''// Well-known external providers we can name from a public IP. Cloudflare publishes its
+// ranges (cloudflare.com/ips, IPv4 set). Azure service tags and per-flow Country come
+// straight from NTANetAnalytics, so they need no static list.
+const CLOUDFLARE_CIDRS=["173.245.48.0/20","103.21.244.0/22","103.22.200.0/22","103.31.4.0/22","141.101.64.0/18","108.162.192.0/18","190.93.240.0/20","188.114.96.0/20","197.234.240.0/22","198.41.128.0/17","162.158.0.0/15","104.16.0.0/13","104.24.0.0/14","172.64.0.0/13","131.0.72.0/22"];
+const COUNTRY_NAMES={US:"United States",GB:"United Kingdom",CA:"Canada",DE:"Germany",FR:"France",NL:"Netherlands",IE:"Ireland",AU:"Australia",IN:"India",SG:"Singapore",JP:"Japan",BR:"Brazil"};
+// Give an external public IP the most specific identity we can prove: a named provider
+// (Cloudflare), the Azure service tag Azure itself attached, or its country.
+function classifyExt(ip,tag,country){
+  if(CLOUDFLARE_CIDRS.some(c=>inCidr(ip,c)))
+    return {id:"extsvc|cloudflare",name:"Cloudflare",prov:"cloudflare",meta:{ip,provider:"Cloudflare (WAF / reverse proxy)"}};
+  const t=String(tag||"").trim();
+  if(t&&!/^internet$/i.test(t)){const base=t.split(".")[0];
+    return {id:"extsvc|tag:"+base,name:base,prov:"tag:"+base,meta:{ip,serviceTag:t}};}
+  const c=String(country||"").trim().toUpperCase();
+  if(c) return {id:"ext:"+ip,name:ip,prov:"",meta:{ip,country:c,countryName:COUNTRY_NAMES[c]||c}};
+  return {id:"ext:"+ip,name:ip,prov:"",meta:{ip}};
+}
+function attachTraffic(graph,flows){''')
+
+# P72c: resolve() consults the classifier for external IPs (dedupes Cloudflare's many
+# IPs to one node, service-tagged IPs to one node per service).
+patch("P72c resolve signature takes external meta",
+'''  const resolve=ip=>{
+    if(ipMap.has(ip))return ipMap.get(ip);''',
+'''  const resolve=(ip,extMeta)=>{
+    if(ipMap.has(ip))return ipMap.get(ip);''')
+
+patch("P72c2 resolve names external endpoints",
+'''    if(!extNodes.has(ip))extNodes.set(ip,{id:"ext:"+ip,type:"ext",name:ip,sub:"",meta:{ip}});
+    return "ext:"+ip;''',
+'''    const ex=classifyExt(ip,extMeta&&extMeta.tag,extMeta&&extMeta.country);
+    if(!extNodes.has(ex.id))extNodes.set(ex.id,{id:ex.id,type:"ext",name:ex.name,sub:"",prov:ex.prov,meta:ex.meta});
+    return ex.id;''')
+
+# P72d: pass each side's tag + the flow's country into resolve.
+patch("P72d flow loop passes tag/country to resolve",
+'    const a=resolve(f.src),b=resolve(f.dst); if(a===b)continue;',
+'    const a=resolve(f.src,{tag:f.srcTag,country:f.country}),b=resolve(f.dst,{tag:f.dstTag,country:f.country}); if(a===b)continue;')
+
+# P72e: named external providers stand alone as their own node; only anonymous bare
+# IPs still collapse into the single Internet bucket.
+patch("P72e named external providers are not collapsed into Internet",
+'  if(n.type==="ext")return "internet|all";           // public IPs collapse into one Internet node',
+'  if(n.type==="ext")return n.prov?null:"internet|all"; // Cloudflare / service-tagged endpoints stand alone; bare IPs collapse')
+
+# ================================================== RESOURCE-TYPE ICONS ON MAP
+# The Architecture view already draws per-resource icons via iconSvg() (which uses
+# the official Azure icon pack when icons/manifest.json is present, else the built-in
+# glyph). Bring the same icon into the CENTRE of every map node, Datadog-style, so a
+# resource's type reads at a glance on the graph too — not just its ring colour.
+patch("P73 resource-type icon in the centre of map nodes",
+'''  node.append("circle").attr("r",d=>Math.max(3,rOf(d)*0.30))
+    .attr("fill",d=>badNodes.has(d.id)||(d.type==="group"&&d.bad)?"#DC3545":TYPES[d.type].color)
+    .attr("opacity",d=>d.type==="group"?0:0.85);''',
+'''  node.append("circle").attr("r",d=>Math.max(3,rOf(d)*0.30))
+    .attr("fill",d=>badNodes.has(d.id)||(d.type==="group"&&d.bad)?"#DC3545":TYPES[d.type].color)
+    .attr("opacity",d=>(d.type==="group"||GLYPH[d.type])?0:0.85);
+  // Azure resource-type icon in the node centre. Uses the official icon pack when
+  // icons/manifest.json is loaded (make-icon-pack.sh), otherwise the built-in glyph.
+  node.filter(d=>d.type!=="group"&&GLYPH[d.type]).each(function(d){
+    const sz=Math.min(16,Math.max(11,rOf(d)*1.3));
+    const gg=document.createElementNS("http://www.w3.org/2000/svg","g");
+    gg.setAttribute("transform","translate("+(-sz/2)+","+(-sz/2)+")");
+    gg.innerHTML=iconSvg(d.type,badNodes.has(d.id)?"#B91C1C":TYPES[d.type].color,sz);
+    this.appendChild(gg);
+  });''')
+
+# ============================================ AZURE RULE RECOMMENDATIONS (NTA)
+# Azure Traffic Analytics publishes NTARuleRecommendation: a per-traffic-pattern
+# verdict of Allow / Block / Advisory. That is Microsoft's own answer to "is this
+# rule legitimate?". generate-netmap.sh now collects it into EMBEDDED.recos;
+# surface it in the Analysis tab next to the tool's own heuristic.
+patch("P74a load rule recommendations",
+'let metricsRaw=EMBEDDED&&EMBEDDED.metrics?EMBEDDED.metrics:[];',
+'''let metricsRaw=EMBEDDED&&EMBEDDED.metrics?EMBEDDED.metrics:[];
+let recos=EMBEDDED&&EMBEDDED.recos?EMBEDDED.recos:[];''')
+
+patch("P74b Azure rule recommendations section in Analysis",
+'  const groups=deniedByRule();',
+'''  // Azure's own verdict (NTARuleRecommendation): Allow / Block / Advisory per pattern.
+  if(recos&&recos.length){
+    const AC={Allow:"#1F9D62",Block:"#B02A37",Advisory:"#9A6700"};
+    html+='<div class="secTitle" style="margin-top:14px">Azure rule recommendations'
+       +'<span style="color:var(--faint);font-weight:400;text-transform:none;letter-spacing:0"> '
+       +recos.length+" from Traffic Analytics — Microsoft's own Allow / Block / Advisory verdict on observed traffic</span></div>";
+    html+='<table class="rules"><thead><tr><th>VERDICT</th><th>PROTO</th><th>PORTS</th><th>SOURCE</th><th>DESTINATION</th><th>SCOPE</th><th>RULE</th></tr></thead><tbody>';
+    for(const r of recos.slice(0,200)){
+      const act=r.RecommendedAction||r.recommendedAction||"";
+      const col=AC[act]||"var(--dim)";
+      const src=r.SrcPublicIpCidrs||r.SrcServiceTagsList||"*";
+      const dst=r.DestPublicIpCidrs||r.DestServiceTagsList||"*";
+      const ports=String(r.DestPortsRanges||"")+(r.PortCategory?" ("+r.PortCategory+")":"");
+      html+='<tr><td><span style="display:inline-block;font-size:9.5px;font-weight:700;letter-spacing:.04em;'
+        +'text-transform:uppercase;padding:2px 7px;border-radius:9px;color:#fff;background:'+col+'">'+esc(act||"—")+'</span></td>'
+        +'<td>'+esc(r.L4Protocol||"")+'</td><td>'+esc(ports||"—")+'</td>'
+        +'<td class="mono">'+esc(String(src).slice(0,40))+'</td>'
+        +'<td class="mono">'+esc(String(dst).slice(0,40))+'</td>'
+        +'<td>'+esc(r.RuleScope||"")+'</td><td>'+esc(r.RecommendedRuleName||"")+'</td></tr>';
+    }
+    html+='</tbody></table>';
+    html+='<div style="font-size:11px;color:var(--faint);margin:4px 0 6px"><b style="color:#B02A37">Block</b> = traffic Azure judges you should not be allowing · <b style="color:#1F9D62">Allow</b> = legitimate traffic worth an explicit rule · <b style="color:#9A6700">Advisory</b> = review. Azure derives these from observed flows; cross-check against the Rules tab.</div>';
+  }
+  const groups=deniedByRule();''')
+
+# ================================================ EFFECTIVE ROUTES (per NIC)
+# The tool reads authored UDRs. generate-netmap.sh can now also collect each NIC's
+# EFFECTIVE route table (UDR + BGP + system, as Azure applies it) via Network Watcher
+# into EMBEDDED.effectiveRoutes. Show it on the resource's panel — the real answer to
+# "where does this traffic actually go?".
+patch("P75a load and index effective routes",
+'let recos=EMBEDDED&&EMBEDDED.recos?EMBEDDED.recos:[];',
+'''let recos=EMBEDDED&&EMBEDDED.recos?EMBEDDED.recos:[];
+let effRoutes=EMBEDDED&&EMBEDDED.effectiveRoutes?EMBEDDED.effectiveRoutes:[];
+const effRoutesBy=new Map(); for(const e of effRoutes){ if(e&&e.nicId)effRoutesBy.set(low(e.nicId),e.routes||[]); }''')
+
+patch("P75b effective-routes section on the panel",
+'''  if(sel.meta.routes&&sel.meta.routes.length){
+    html+='<div class="secTitle" style="color:var(--hi)">ROUTES</div>';
+    for(const r of sel.meta.routes)html+='<div class="traf" style="cursor:default;color:var(--text)">'+esc(r)+'</div>';
+  }''',
+'''  if(sel.meta.routes&&sel.meta.routes.length){
+    html+='<div class="secTitle" style="color:var(--hi)">ROUTES</div>';
+    for(const r of sel.meta.routes)html+='<div class="traf" style="cursor:default;color:var(--text)">'+esc(r)+'</div>';
+  }
+  {
+    const er=effRoutesBy.get(low(sel.id));
+    if(er&&er.length){
+      html+='<div class="secTitle" style="color:var(--hi)">EFFECTIVE ROUTES <span style="color:var(--faint);font-weight:400;text-transform:none;letter-spacing:0">UDR + BGP + system, as Azure applies them</span></div>';
+      for(const r of er.slice(0,24)){
+        const drop=/^none$/i.test(r.nextHopType||"");
+        const hop=(r.nextHopType||"")+(r.nextHopIp?" "+r.nextHopIp:"");
+        html+='<div class="traf" style="cursor:default;color:'+(drop?"var(--danger)":"var(--text)")+'">'+esc(r.prefix||"")+' → '+esc(hop)+(r.source?' <span style="color:var(--faint)">'+esc(r.source)+'</span>':'')+(drop?' <span style="color:var(--danger)">blackhole</span>':'')+'</div>';
+      }
+    }
+  }''')
+
+# ================================ NODE SIZE BY VOLUME + DENY DETAIL IN TOOLTIP
+# P76a: memoise nodeTraffic (it is about to be called once per node for sizing) and
+# collect, per node, the layer/group/rule of every denied path touching it.
+patch("P76a memoise nodeTraffic and collect deny reasons",
+'''function nodeTraffic(id){
+  let out=0,inn=0,flows=0,denied=0;
+  for(const e of fullGraph.edges){
+    if(e.kind!=="traffic")continue;
+    if(e.source===id){ out+=e.bytesOut||0; inn+=e.bytesIn||0; flows+=e.total||0; if(e.denied)denied++; }
+    else if(e.target===id){ out+=e.bytesIn||0; inn+=e.bytesOut||0; flows+=e.total||0; if(e.denied)denied++; }
+  }
+  return {out,inn,flows,denied};
+}''',
+'''let _ntCache=new Map(), _ntVer=null;
+function nodeTraffic(id){
+  if(_ntVer!==fullGraph){ _ntCache=new Map(); _ntVer=fullGraph; }
+  if(_ntCache.has(id))return _ntCache.get(id);
+  let out=0,inn=0,flows=0,denied=0; const deny=[];
+  for(const e of fullGraph.edges){
+    if(e.kind!=="traffic")continue;
+    const isSrc=e.source===id, isTgt=e.target===id;
+    if(!isSrc&&!isTgt)continue;
+    if(isSrc){ out+=e.bytesOut||0; inn+=e.bytesIn||0; } else { out+=e.bytesIn||0; inn+=e.bytesOut||0; }
+    flows+=e.total||0;
+    if(e.denied){ denied++;
+      const oid=isSrc?(e.target.id||e.target):(e.source.id||e.source), o=byId&&byId.get(oid);
+      deny.push({peer:o?o.name:"?", layer:DENY_LAYER[e.blockLayer]||"unknown", group:e.blockGroup||"", rule:e.blockRule||""}); }
+  }
+  const res={out,inn,flows,denied,deny};
+  _ntCache.set(id,res); return res;
+}''')
+
+# P76b: node radius grows with observed traffic volume (Datadog-style), so a busy
+# resource reads as a bigger circle. No traffic keeps the type's base size.
+patch("P76b node size scales with traffic volume",
+'const rOf=d=>d.type==="group"?Math.max(19,Math.min(50,12+Math.sqrt(d.count)*3.1)):TYPES[d.type].r+2;',
+'''const rOf=d=>{
+  if(d.type==="group")return Math.max(19,Math.min(50,12+Math.sqrt(d.count)*3.1));
+  const base=TYPES[d.type].r+2, t=nodeTraffic(d.id), bytes=(t.out||0)+(t.inn||0);
+  return bytes>0?Math.max(base,Math.min(30,base+Math.log10(bytes)*1.9)):base;
+};''')
+
+# P76c: put the deny detail (which layer/rule blocked it) in the node hover box,
+# not only the count — so hovering a red node explains WHY it is red.
+patch("P76c deny detail in the node hover box",
+'''      if(t.denied)html+='<div class="tr bad"><span>Denied paths</span><b>'+t.denied+'</b></div>';''',
+'''      if(t.denied){
+        html+='<div class="tr bad"><span>Denied paths</span><b>'+t.denied+'</b></div>';
+        const seen=new Set();
+        for(const dn of (t.deny||[])){
+          const k=dn.layer+"|"+dn.group+"|"+dn.rule; if(seen.has(k))continue; seen.add(k);
+          html+='<div class="tr bad" style="align-items:flex-start"><span>blocked at</span>'
+              + '<b style="text-align:right;max-width:210px">'+esc(dn.layer)+(dn.group?" "+esc(dn.group):"")
+              + (dn.rule?'<br><span style="color:#FCA5A5;font-weight:400">'+esc(dn.rule)+'</span>':'')+'</b></div>';
+          if(seen.size>=3)break;
+        }
+      }''')
+
+# ============================================== MAP DECLUTTER: DROP EDGE PROSE
+# The long "blocked at ..." / "impaired: ..." strings that were drawn on the edges
+# are now fully carried by the node hover box (deny layer + rule) and the amber
+# ring, so remove them from the map entirely — no more words sprawled across it.
+patch("P77 remove blocked-at / impaired edge labels from the map",
+'''  const lbl2=halo(root.append("g").selectAll("text")
+    .data(links.filter(d=>(d.denied&&(d.blockRule||d.blockGroup))||d.impaired)).join("text"))''',
+'''  const lbl2=halo(root.append("g").selectAll("text")
+    .data([]).join("text"))''')
+
+# ============================================= ANALYSIS TAB: COMPACT THE INTRO
+# The five-line severity explainer was a wall of text at the top of Analysis.
+# Replace it with a one-line severity strip and fold the full explanation into a
+# collapsible, the same pattern used under the map.
+patch("P78 compact the Analysis severity legend",
+'''  html+='<div class="sevKey">'
+    +'<div><span class="fb high">High</span> Broken or exposed right now: traffic is being blocked, a management port is open to the internet, SNAT ports are exhausted, a backend is unhealthy.</div>'
+    +'<div><span class="fb warn">Warning</span> Configuration that is wrong or ineffective: a rule that can never match, an NSG allow that AVNM overrides, a VNet outside AVNM, a subnet with no NSG.</div>'
+    +'<div><span class="fb info">Info</span> Hygiene: unattached NSGs, rules that saw no traffic, subnets with no route table. Worth cleaning up, not urgent.</div>'
+    +'<div style="color:var(--faint);margin-top:2px"><b>Severity is not traffic volume.</b> For top talkers use the Metrics tab; for the busiest rules, sort the Rules tab by Traffic.</div>'
+    +'<div style="color:var(--faint)"><b style="color:#B02A37">Denied</b> = a rule said no, and Azure names it. <b style="color:#9A6700">Impaired</b> = nothing denied it, the path cannot complete. Different colours on the map, different fixes.</div>'
+    +'</div>';''',
+'''  html+='<div class="sevKey" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">'
+    +'<span class="fb high">High</span><span style="color:var(--faint)">broken or exposed now</span>'
+    +'<span class="fb warn">Warning</span><span style="color:var(--faint)">wrong or ineffective config</span>'
+    +'<span class="fb info">Info</span><span style="color:var(--faint)">hygiene</span>'
+    +'<details style="margin-left:auto"><summary style="cursor:pointer;color:var(--dim);font-weight:600;font-size:11px;list-style:none">What these mean</summary>'
+    +'<div style="margin-top:7px;line-height:1.55;max-width:900px;font-weight:400">'
+    +'<div><b>High</b> — traffic blocked now, a management port open to the internet, SNAT exhausted, a backend unhealthy.</div>'
+    +'<div><b>Warning</b> — a rule that can never match, an NSG allow that AVNM overrides, a VNet outside AVNM, a subnet with no NSG.</div>'
+    +'<div><b>Info</b> — unattached NSGs, rules that saw no traffic, subnets with no route table.</div>'
+    +"<div style=\\"color:var(--faint);margin-top:3px\\"><b>Severity is not volume</b> — for top talkers use Metrics; for the busiest rules sort Rules by Traffic. <b style=\\"color:#B02A37\\">Denied</b> = a rule said no. <b style=\\"color:#9A6700\\">Impaired</b> = nothing denied it, the path cannot complete.</div>"
+    +'</div></details>'
+    +'</div>';''')
+
+# =============================================== METRICS TAB: REAL SORT KEYS
+# The sort dropdown offered CPU / network / disk, which don't match the network
+# metrics actually collected (SNAT, availability, health, unhealthy hosts), so the
+# sort did nothing. Replace with keys that match the real metric names.
+patch("P79 metrics sort by real network metrics",
+'<select id="mSort"><option value="cpu">Sort by CPU</option><option value="network">Sort by network</option><option value="disk">Sort by disk</option></select>',
+'<select id="mSort"><option value="snatport">Sort by SNAT utilization</option><option value="availability">Sort by availability</option><option value="firewallhealth">Sort by firewall health</option><option value="unhealthy">Sort by unhealthy hosts</option><option value="latency">Sort by latency</option></select>')
+
+# =================================================== CUSTOM DATE/TIME RANGE
+# The window control offers presets (30 min … 7 days). Add an absolute from → to
+# range, wired on the Map, Rules and Analysis tabs. The window is global, so a
+# custom range set on any tab applies everywhere. Filters captured flow data only;
+# it never re-queries Azure (same contract as the presets).
+
+# --- state + filtering ---
+patch("P80a custom-range state",
+'let windowMin=0;              // 0 = the whole scan window',
+'''let windowMin=0;              // 0 = the whole scan window
+let winFrom=null, winTo=null; // absolute custom range (ms); overrides windowMin when set''')
+
+patch("P80b flows honour the custom range",
+'''function flowsInWindow(){
+  if(!windowMin||!allFlowRows.length)return allFlowRows;''',
+'''function flowsInWindow(){
+  if(winFrom&&winTo)return allFlowRows.filter(f=>!f.ts||(f.ts>=winFrom&&f.ts<=winTo));
+  if(!windowMin||!allFlowRows.length)return allFlowRows;''')
+
+patch("P80c firewall logs honour the custom range",
+'''function fwInWindow(){
+  if(!windowMin||!fwRows.length)return fwRows;''',
+'''function fwInWindow(){
+  if(winFrom&&winTo)return fwRows.filter(r=>!r.ts||(r.ts>=winFrom&&r.ts<=winTo));
+  if(!windowMin||!fwRows.length)return fwRows;''')
+
+patch("P80d applyCustomWindow + rebuildForWindow",
+'''function applyWindow(min){
+  windowMin=min;
+  const base0=buildGraph(items);''',
+'''function applyWindow(min){ windowMin=min; winFrom=winTo=null; rebuildForWindow(); }
+function applyCustomWindow(from,to){ windowMin=0; winFrom=from; winTo=to; rebuildForWindow(); }
+function rebuildForWindow(){
+  const base0=buildGraph(items);''')
+
+patch("P80e windowRange reflects the custom range",
+'''function windowRange(){
+  const to=newestFlowTs();
+  if(!to)return null;''',
+'''function windowRange(){
+  if(winFrom&&winTo)return {from:winFrom,to:winTo};
+  const to=newestFlowTs();
+  if(!to)return null;''')
+
+patch("P80f windowLabel reflects the custom range",
+'  const base=windowMin?"last "+humanMins(windowMin):(flowSpanMin?"all "+humanMins(flowSpanMin):"all flows");',
+'  const base=(winFrom&&winTo)?"custom range":(windowMin?"last "+humanMins(windowMin):(flowSpanMin?"all "+humanMins(flowSpanMin):"all flows"));')
+
+# --- markup: Map toolbar ---
+patch("P80g custom-range control on the Map toolbar",
+'''      <option value="10080">Last 7 days</option>
+    </select>
+  </div>''',
+'''      <option value="10080">Last 7 days</option>
+      <option value="custom">Custom range…</option>
+    </select>
+    <span id="timeWinCustom" style="display:none;gap:5px;align-items:center">
+      <input type="datetime-local" id="timeWinFrom" style="font-size:11px;padding:3px 5px" />
+      <span style="color:var(--faint)">→</span>
+      <input type="datetime-local" id="timeWinTo" style="font-size:11px;padding:3px 5px" />
+      <button class="btn" id="timeWinApply">Apply</button>
+    </span>
+  </div>''')
+
+# --- markup: Rules toolbar ---
+patch("P80h custom-range control on the Rules toolbar",
+'''        <option value="10080">Last 7 days</option>
+      </select>
+      <select id="ruleAccess">''',
+'''        <option value="10080">Last 7 days</option>
+        <option value="custom">Custom range…</option>
+      </select>
+      <span id="ruleWinCustom" style="display:none;gap:5px;align-items:center">
+        <input type="datetime-local" id="ruleWinFrom" style="font-size:11px;padding:3px 5px" />
+        <span style="color:var(--faint)">→</span>
+        <input type="datetime-local" id="ruleWinTo" style="font-size:11px;padding:3px 5px" />
+        <button class="btn" id="ruleWinApply">Apply</button>
+      </span>
+      <select id="ruleAccess">''')
+
+# --- markup: Analysis window control (it had none) ---
+patch("P80i window control on the Analysis tab",
+'''  <div id="analysisView" style="display:none">
+    <div class="statusline" id="anaSummary"></div>''',
+'''  <div id="analysisView" style="display:none">
+    <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+      <span style="font-size:11px;color:var(--faint)">Traffic window</span>
+      <select id="anaWin" title="Filters the traffic already captured in this scan; it does not re-query Azure.">
+        <option value="0">All flows in this scan</option>
+        <option value="30">Last 30 minutes</option>
+        <option value="60">Last hour</option>
+        <option value="360">Last 6 hours</option>
+        <option value="1440">Last 24 hours</option>
+        <option value="4320">Last 3 days</option>
+        <option value="10080">Last 7 days</option>
+        <option value="custom">Custom range…</option>
+      </select>
+      <span id="anaWinCustom" style="display:none;gap:5px;align-items:center">
+        <input type="datetime-local" id="anaWinFrom" style="font-size:11px;padding:3px 5px" />
+        <span style="color:var(--faint)">→</span>
+        <input type="datetime-local" id="anaWinTo" style="font-size:11px;padding:3px 5px" />
+        <button class="btn" id="anaWinApply">Apply</button>
+      </span>
+    </div>
+    <div class="statusline" id="anaSummary"></div>''')
+
+# --- handlers: wire preset + custom on all three tabs ---
+patch("P80j wire custom-range handlers",
+'''bind("timeWin","onchange",function(){applyWindow(+this.value);syncWindowControls();});
+bind("ruleWin","onchange",function(){applyWindow(+this.value);syncWindowControls();});''',
+'''function _winToMs(v){const t=v?Date.parse(v):NaN;return isNaN(t)?null:t;}
+function _winToLocal(ms){const d=new Date(ms-new Date(ms).getTimezoneOffset()*60000);return d.toISOString().slice(0,16);}
+function wireWin(sel,customId,fromId,toId,applyId){
+  const s=document.getElementById(sel); if(!s)return;
+  s.onchange=function(){
+    const cc=document.getElementById(customId);
+    if(this.value==="custom"){
+      if(cc)cc.style.display="inline-flex";
+      const r=windowRange();
+      if(r){const f=document.getElementById(fromId),t=document.getElementById(toId);if(f)f.value=_winToLocal(r.from);if(t)t.value=_winToLocal(r.to);}
+    }else{ if(cc)cc.style.display="none"; applyWindow(+this.value); syncWindowControls(); }
+  };
+  const ab=document.getElementById(applyId);
+  if(ab)ab.onclick=function(){
+    const f=_winToMs((document.getElementById(fromId)||{}).value), t=_winToMs((document.getElementById(toId)||{}).value);
+    const info=document.getElementById("focusInfo");
+    if(f==null||t==null||f>=t){ if(info)info.textContent="Pick a valid from → to range."; return; }
+    applyCustomWindow(f,t); syncWindowControls();
+  };
+}
+wireWin("timeWin","timeWinCustom","timeWinFrom","timeWinTo","timeWinApply");
+wireWin("ruleWin","ruleWinCustom","ruleWinFrom","ruleWinTo","ruleWinApply");
+wireWin("anaWin","anaWinCustom","anaWinFrom","anaWinTo","anaWinApply");''')
+
+patch("P80k syncWindowControls keeps all three selects in step",
+'''  const a=document.getElementById("timeWin"), b=document.getElementById("ruleWin");
+  if(!a||!b)return;
+  b.value=String(windowMin||0); a.value=String(windowMin||0);''',
+'''  const a=document.getElementById("timeWin"), b=document.getElementById("ruleWin"), an=document.getElementById("anaWin");
+  if(!a||!b)return;
+  const v=(winFrom&&winTo)?"custom":String(windowMin||0);
+  a.value=v; b.value=v; if(an)an.value=v;
+  for(const cid of ["timeWinCustom","ruleWinCustom","anaWinCustom"]){
+    const cc=document.getElementById(cid); if(cc)cc.style.display=(v==="custom")?"inline-flex":"none";
+  }''')
+
+# ==================================== EFFECTIVE RULES: INCLUDE FIREWALL LAYER
+# The effective-rules panel already pulls the AVNM security admin rules and the
+# NSG rules that apply to a resource, in evaluation order. Add the Azure Firewall
+# policy rules too, when the resource's routes (authored UDR or the effective
+# table) steer egress to a firewall — so for a denied flow you can see all three
+# rule layers together and where an allow would need to go to unblock it.
+patch("P81 firewall policy rules in the effective-rules panel",
+'''  for(const id of nicIds)
+    for(const e of fullGraph.edges) if(e.kind==="nsg"&&e.source===id){
+      const g=byId.get(e.target); if(g&&g.meta.rules)layers.push({layer:"NIC NSG",from:g.name,rules:g.meta.rules});
+    }
+  return layers;''',
+'''  for(const id of nicIds)
+    for(const e of fullGraph.edges) if(e.kind==="nsg"&&e.source===id){
+      const g=byId.get(e.target); if(g&&g.meta.rules)layers.push({layer:"NIC NSG",from:g.name,rules:g.meta.rules});
+    }
+  // Azure Firewall policy rules, when egress from this resource is steered to a firewall
+  // (a next hop of VirtualAppliance in an authored UDR or the effective route table).
+  let viaFw=false;
+  const rtIds=new Set();
+  for(const id of (nicIds.length?nicIds:[nodeId]))
+    for(const e of fullGraph.edges) if(e.kind==="inSubnet"&&e.source===id)
+      for(const e2 of fullGraph.edges) if(e2.kind==="rt"&&e2.source===e.target) rtIds.add(e2.target);
+  for(const rid of rtIds){ const rt=byId.get(rid); if(rt&&rt.meta.routes&&rt.meta.routes.some(x=>/virtualappliance/i.test(x))) viaFw=true; }
+  for(const id of (nicIds.length?nicIds:[nodeId])){ const er=effRoutesBy.get(low(id)); if(er&&er.some(r=>/virtualappliance/i.test(r.nextHopType||""))) viaFw=true; }
+  if(viaFw)
+    for(const fp of fullGraph.nodes.filter(x=>x.type==="fwrcg"&&x.meta.rules&&x.meta.rules.length))
+      layers.push({layer:"Azure Firewall policy",from:fp.name,rules:fp.meta.rules});
+  return layers;''')
+
+# ============================= EFFECTIVE RULES: INCLUDE THE ROUTE TABLE LAYER
+# The route table is the next-hop decision — a next hop of None is a silent
+# blackhole (an effective deny). Add it as a layer, in Azure's evaluation order
+# (AVNM security admin → NSG → route table → firewall), so the panel shows every
+# layer a flow crosses and where a change would need to go.
+patch("P82a route-table layer in effective rules",
+'''      for(const e2 of fullGraph.edges) if(e2.kind==="rt"&&e2.source===e.target) rtIds.add(e2.target);
+  for(const rid of rtIds){ const rt=byId.get(rid); if(rt&&rt.meta.routes&&rt.meta.routes.some(x=>/virtualappliance/i.test(x))) viaFw=true; }''',
+'''      for(const e2 of fullGraph.edges) if(e2.kind==="rt"&&e2.source===e.target) rtIds.add(e2.target);
+  for(const rid of rtIds){ const rt=byId.get(rid);
+    if(rt&&rt.meta.routes&&rt.meta.routes.length) layers.push({layer:"Route table",from:rt.name,kind:"route",routes:rt.meta.routes}); }
+  for(const rid of rtIds){ const rt=byId.get(rid); if(rt&&rt.meta.routes&&rt.meta.routes.some(x=>/virtualappliance/i.test(x))) viaFw=true; }''')
+
+patch("P82b render route-table layers in the effective-rules panel",
+'''        html+='<div class="effLayer"><div class="lh">'+(i+1)+'. '+esc(L.layer)+' — '+esc(L.from)+'</div>';
+        for(const r of [...L.rules].sort((a,b)=>a.priority-b.priority).slice(0,12)){''',
+'''        html+='<div class="effLayer"><div class="lh">'+(i+1)+'. '+esc(L.layer)+' — '+esc(L.from)+'</div>';
+        if(L.kind==="route"){
+          for(const rt of (L.routes||[]).slice(0,12)){
+            const black=/\\u2192\\s*None/i.test(rt)||/->\\s*None/i.test(rt);
+            html+='<div class="rule"><span style="color:'+(black?"var(--danger)":"var(--dim)")+'">'+(black?"\\u2715":"\\u2192")+'</span> '+esc(rt)+(black?' <span style="color:var(--danger);font-size:10px">blackhole \\u00b7 silent drop</span>':'')+'</div>';
+          }
+          if((L.routes||[]).length>12)html+='<div style="font-size:10.5px;color:var(--faint);padding-top:3px">+'+(L.routes.length-12)+' more</div>';
+          html+='</div>'; return;
+        }
+        for(const r of [...L.rules].sort((a,b)=>a.priority-b.priority).slice(0,12)){''')
+
+# ================================ HOVER BOX: SAY WHAT THE RESOURCE IS
+# Under the name, add a plain-language line — the resource type, its IP, and any
+# provider/service-tag/CNAME — so hovering explains what the thing is, not just
+# its name (a NIC reads as "Network interface · 10.x", Cloudflare as its provider).
+patch("P83 resource type line in the hover box",
+'  let html=\'<div class="tt">\'+esc(d.name)+\'</div>\';\n  if(d.type==="group"){',
+'''  let html='<div class="tt">'+esc(d.name)+'</div>';
+  if(d.type!=="group"){
+    const sub=(TYPES[d.type]&&TYPES[d.type].label)||d.type;
+    const ip=(d.meta&&(d.meta.ips||d.meta.ip||d.meta.privateIp||d.meta.prefix))||"";
+    const extra=(d.meta&&(d.meta.provider||d.meta.serviceTag||d.meta.cname))||"";
+    html+='<div style="font-size:10.5px;color:#9AA4B5;font-weight:400;margin:-2px 0 6px">'+esc(sub)+(ip?" \\u00b7 "+esc(ip):"")+(extra?" \\u00b7 "+esc(extra):"")+'</div>';
+  }
+  if(d.type==="group"){''')
+
+# ============================================ BIGGER MAP: fill the viewport
+# The overview graph was a fixed 580px tall — cramped on a large estate. Grow it
+# to fill the window height (with a floor), so there's room to see more at once.
+patch("P84 overview map fills the viewport height",
+'  const W=el.clientWidth||900, H=580;\n  const svg=d3.select(el).append("svg").attr("width",W).attr("height",H).style("background","var(--panel)");',
+'  const W=el.clientWidth||900, H=Math.max(580,(window.innerHeight||900)-230);\n  const svg=d3.select(el).append("svg").attr("width",W).attr("height",H).style("background","var(--panel)");')
+
+# ===================================== DEPS CLICK: SHOW DETAILS, NOT JUST JUMP
+# In the dependencies view a single click re-rooted the whole view onto the node,
+# which felt like "nothing happened / why is it there". Make a single click open
+# the details panel (what the resource is + its connections + rules) and reserve
+# double-click for navigating (re-rooting the view on it).
+patch("P85 deps single-click opens details, double-click navigates",
+'      const node=g.append("g").style("cursor","pointer").on("click",()=>{depsRoot=d.id;selected=d.id;renderAll();});',
+'      const node=g.append("g").style("cursor","pointer")\n        .on("click",(ev)=>{ev.stopPropagation();selected=d.id;renderPanel();})\n        .on("dblclick",(ev)=>{ev.stopPropagation();depsRoot=d.id;selected=d.id;renderAll();});')
+
+# ================================================================ INCIDENT WORK
+# Four checks driven by the azh5pcosql01f DR-replica incident: the path worked,
+# but the replica could not reach its TDE key in Key Vault. The signals were all
+# in fields the mapper discarded. First, capture those fields.
+
+# P90a: VNet custom DNS servers (dhcpOptions) — decides private-endpoint resolution.
+patch("P90a VNet custom DNS servers",
+'      node.meta.prefixes=((p.addressSpace||{}).addressPrefixes||[]).join(", ");',
+'''      node.meta.prefixes=((p.addressSpace||{}).addressPrefixes||[]).join(", ");
+      node.meta.dnsServers=((p.dhcpOptions||{}).dnsServers||[]).join(", ");''')
+
+# P90b: NIC facts — per-NIC DNS override, IP forwarding, accelerated networking,
+# default outbound, primary.
+patch("P90b NIC facts",
+'''      node.meta.ips=ips.join(", ");
+      for(const ic of p.ipConfigurations||[]){const ip=ic.properties||ic;
+        for(const a of ip.applicationSecurityGroups||[]){ if(a.id){addNode(a.id,"asg");addEdge(it.id,a.id,"asg");} }}''',
+'''      node.meta.ips=ips.join(", ");
+      node.meta.nicDns=((p.dnsSettings||{}).dnsServers||[]).join(", ");
+      node.meta.ipForwarding=!!p.enableIPForwarding;
+      node.meta.accelNet=!!p.enableAcceleratedNetworking;
+      node.meta.defaultOutbound=p.defaultOutboundConnectivityEnabled;
+      node.meta.primaryNic=!!p.primary;
+      for(const ic of p.ipConfigurations||[]){const ip=ic.properties||ic;
+        for(const a of ip.applicationSecurityGroups||[]){ if(a.id){addNode(a.id,"asg");addEdge(it.id,a.id,"asg");} }}''')
+
+# P90c: private endpoint target service, group ids and FQDNs.
+patch("P90c private endpoint target + FQDNs",
+'''      const conns=[].concat(p.privateLinkServiceConnections||[],p.manualPrivateLinkServiceConnections||[]);
+      for(const c of conns){const cp=c.properties||c;
+        if(cp.privateLinkServiceId){addNode(cp.privateLinkServiceId,"svc",tail(cp.privateLinkServiceId));addEdge(it.id,cp.privateLinkServiceId,"plink");}}
+      node.meta.ips=(p.customDnsConfigs||[]).flatMap(d=>d.ipAddresses||[]).join(", ");''',
+'''      const conns=[].concat(p.privateLinkServiceConnections||[],p.manualPrivateLinkServiceConnections||[]);
+      for(const c of conns){const cp=c.properties||c;
+        if(cp.privateLinkServiceId){addNode(cp.privateLinkServiceId,"svc",tail(cp.privateLinkServiceId));addEdge(it.id,cp.privateLinkServiceId,"plink");
+          if(!node.meta.peTarget)node.meta.peTarget=cp.privateLinkServiceId;
+          if(!node.meta.peGroupIds&&cp.groupIds)node.meta.peGroupIds=(cp.groupIds||[]).join(",");}}
+      node.meta.ips=(p.customDnsConfigs||[]).flatMap(d=>d.ipAddresses||[]).join(", ");
+      node.meta.peFqdns=(p.customDnsConfigs||[]).map(d=>d.fqdn).filter(Boolean);''')
+
+# P90e: service-level ACLs (Key Vault / storage / SQL) and full VM facts.
+patch("P90e service ACLs + VM facts",
+'    if(t==="vm")node.meta.size=(p.hardwareProfile&&p.hardwareProfile.vmSize)||"";',
+'''    if(t==="kv"||t==="storage"||t==="sql"){
+      const acl=p.networkAcls||{};
+      node.meta.aclDefault=acl.defaultAction||"";
+      node.meta.aclVnetRules=(acl.virtualNetworkRules||[]).length;
+      node.meta.aclIpRules=(acl.ipRules||[]).length;
+      node.meta.publicNet=p.publicNetworkAccess||"";
+    }
+    if(t==="vm"){
+      node.meta.size=(p.hardwareProfile&&p.hardwareProfile.vmSize)||"";
+      const iv=(p.extended&&p.extended.instanceView)||p.instanceView||{};
+      node.meta.power=(iv.powerState&&iv.powerState.displayStatus)||((iv.statuses||[]).map(s=>s.displayStatus||"").find(x=>/^VM /i.test(x)))||"";
+      node.meta.osName=iv.osName||(p.storageProfile&&p.storageProfile.osDisk&&p.storageProfile.osDisk.osType)||"";
+      node.meta.osVersion=iv.osVersion||"";
+      node.meta.licenseType=p.licenseType||"";
+      node.meta.hyperV=iv.hyperVGeneration||"";
+      for(const n of ((p.networkProfile&&p.networkProfile.networkInterfaces)||[])){ if(n.id){addNode(n.id,"nic");addEdge(it.id,n.id,"nicOf");} }
+    }''')
+
+# ---------------------------------------------------------------- CHECK 1 & 2
+# Private endpoint DNS reachability, and services that refuse everything except
+# their private endpoint. The tool never claims to know what a resolver returned;
+# it names the exact verify command and escapes it at render.
+
+# C1a: guidance for the two new impairment kinds.
+patch("C1a impair-fix entries for PE-DNS and deny-only",
+'''  routedrop:"Confirm the prefix should be dropped. If it should not, remove the next-hop-None route or point it at the firewall.",
+};''',
+'''  routedrop:"Confirm the prefix should be dropped. If it should not, remove the next-hop-None route or point it at the firewall.",
+  pednsunverif:"On a client in that VNet run Resolve-DnsName <fqdn>. If it returns a public IP, the VNet is not linked to the private DNS zone (or its custom DNS forwarder is not), so the client reaches the public endpoint. Link the zone to the VNet, or point the custom forwarder at a resolver that can.",
+  denyonlype:"The service refuses everything except its private endpoint. Clients must resolve the private IP; confirm with Resolve-DnsName <fqdn> on a client in the calling VNet.",
+};''')
+
+# C1b: the reachability model. peFqdns / peTarget / zone dnslink edges / vnet
+# custom DNS are all parsed already (P90); this joins them.
+patch("C1b peDnsFindings model",
+'let connCache=null;',
+'''let connCache=null;
+let peDnsCache=null;
+/* ---- private endpoint DNS reachability (Check 1) + deny-only services (Check 2) ---- */
+const PRIVLINK_ZONE_BY_GROUP={
+  vault:"privatelink.vaultcore.azure.net",
+  blob:"privatelink.blob.core.windows.net",
+  file:"privatelink.file.core.windows.net",
+  table:"privatelink.table.core.windows.net",
+  queue:"privatelink.queue.core.windows.net",
+  dfs:"privatelink.dfs.core.windows.net",
+  web:"privatelink.web.core.windows.net",
+  sqlServer:"privatelink.database.windows.net",
+  sqlserver:"privatelink.database.windows.net",
+  registry:"privatelink.azurecr.io",
+  namespace:"privatelink.servicebus.windows.net",
+  sites:"privatelink.azurewebsites.net"
+};
+function peDnsFindings(){
+  if(peDnsCache)return peDnsCache;
+  const byId=new Map(fullGraph.nodes.map(n=>[n.id,n]));
+  const vo=vnetOfCache||computeVnetOf();
+  const norm=s=>String(s||"").replace(/\\.$/,"").toLowerCase();
+  const zones=fullGraph.nodes.filter(n=>n.type==="zone");
+  const linkedVnets=z=>fullGraph.edges.filter(e=>e.kind==="dnslink"&&e.source===z.id).map(e=>e.target);
+  const customDns=vid=>{const v=byId.get(vid);return (v&&v.meta&&v.meta.dnsServers)||"";};
+  const out=[];
+  for(const pe of fullGraph.nodes){
+    if(pe.type!=="pe")continue;
+    const fqdns=pe.meta.peFqdns||[];
+    const groupIds=(pe.meta.peGroupIds||"").split(",").map(x=>x.trim()).filter(Boolean);
+    const targetId=pe.meta.peTarget||null;
+    const target=targetId?byId.get(targetId):null;
+    // zones whose name is a suffix of one of the PE's FQDNs
+    let zoneNodes=zones.filter(z=>{const zn=norm(z.name);return zn&&fqdns.some(f=>{const fn=norm(f);return fn===zn||fn.endsWith("."+zn);});});
+    let expectedZoneName="";
+    if(!zoneNodes.length){
+      for(const g of groupIds){if(PRIVLINK_ZONE_BY_GROUP[g]){expectedZoneName=PRIVLINK_ZONE_BY_GROUP[g];break;}}
+      if(expectedZoneName)zoneNodes=zones.filter(z=>norm(z.name)===norm(expectedZoneName));
+    }
+    const fqdn=fqdns[0]||(target&&target.name&&expectedZoneName?target.name+"."+expectedZoneName:expectedZoneName||(target&&target.name)||pe.name);
+    // client VNets: sources of flows to the PE or its target, plus VNets peered to the PE's own VNet
+    const peVnet=vo.get(pe.id)||null;
+    const clientVnets=new Map();
+    for(const e of fullGraph.edges){
+      if(e.kind==="traffic"&&(e.target===pe.id||(targetId&&e.target===targetId))){
+        const cv=vo.get(e.source); if(cv&&cv!==peVnet&&!clientVnets.has(cv))clientVnets.set(cv,"observed traffic");
+      }
+      if(e.kind==="peer"&&peVnet&&(e.source===peVnet||e.target===peVnet)){
+        const other=e.source===peVnet?e.target:e.source;
+        if(other&&other!==peVnet&&!clientVnets.has(other))clientVnets.set(other,"VNet peering");
+      }
+    }
+    const denyOnly=!!(target&&(target.type==="kv"||target.type==="storage"||target.type==="sql")
+      &&norm(target.meta.aclDefault)==="deny"&&!target.meta.aclVnetRules&&!target.meta.aclIpRules);
+    const linked=new Set(); for(const z of zoneNodes)for(const v of linkedVnets(z))linked.add(v);
+    const broken=[];
+    for(const [cv,via] of clientVnets){
+      if(linked.has(cv))continue;              // linked to the zone: resolution works
+      const dns=customDns(cv);
+      if(!dns)continue;                         // default Azure DNS is a different, verifiable story
+      broken.push({vnet:cv,vnetName:(byId.get(cv)||{name:cv}).name,dns,via});
+    }
+    out.push({peId:pe.id,peName:pe.name,targetId,target,fqdn,
+      zoneNodes,zoneName:(zoneNodes[0]&&zoneNodes[0].name)||expectedZoneName,
+      linkedCount:linked.size,denyOnly,broken,clientCount:clientVnets.size});
+  }
+  peDnsCache=out; return out;
+}''')
+
+# C1c: invalidate the new cache wherever the graph is rebuilt.
+patch("C1c peDnsCache invalidation",
+'connCache=null; vnetOfCache=null;',
+'connCache=null; vnetOfCache=null; peDnsCache=null;',
+count=2)
+
+# C1d: surface the findings in the connectivity-problem list (Troubleshoot tab +
+# map colouring + resource panels).
+patch("C1d connectivityProblems wires in Checks 1 & 2",
+'''  const order={high:0,warn:1,info:2};
+  P.sort((a,b)=>order[a.sev]-order[b.sev]||b.evidence.localeCompare(a.evidence));''',
+'''  /* --- private endpoint DNS reachability (Check 1) + deny-only services (Check 2) --- */
+  {
+    const brokenTargets=new Set();
+    for(const f of peDnsFindings()){
+      for(const b of f.broken){
+        const sev=f.denyOnly?"high":"warn";
+        if(f.denyOnly&&f.targetId)brokenTargets.add(f.targetId);
+        add(sev,"pednsunverif",
+          (f.denyOnly?"Private endpoint unreachable from "+b.vnetName:"Private endpoint resolution unverifiable from "+b.vnetName)+": "+f.peName,
+          "VNet "+b.vnetName+" is a client of "+f.peName+" ("+b.via+") but is not linked to the private DNS zone "+(f.zoneName||"(none found)")
+          +", and it sets custom DNS servers ("+b.dns+"). This tool cannot see what that resolver returns. If it does not hand back the private IP, the client resolves the public name"
+          +(f.denyOnly?" and the service, which refuses everything except its private endpoint, refuses the connection at the network layer."
+                      :" and connects to the public endpoint instead of the private one.")
+          +" Private endpoint resolution cannot be verified from this VNet. Confirm on a client with: Resolve-DnsName "+f.fqdn,
+          f.denyOnly&&f.targetId?f.targetId:f.peId,"configuration");
+      }
+    }
+    for(const n of fullGraph.nodes){
+      if(!(n.type==="kv"||n.type==="storage"||n.type==="sql"))continue;
+      if(low(n.meta.aclDefault||"")!=="deny"||n.meta.aclVnetRules||n.meta.aclIpRules)continue;
+      if(brokenTargets.has(n.id))continue;      // already raised as a connectivity problem above
+      const hasPe=fullGraph.edges.some(e=>e.kind==="plink"&&e.target===n.id);
+      add("info","denyonlype","Reachable only through its private endpoint: "+n.name,
+        "networkAcls.defaultAction is Deny with no virtual network rules and no IP rules. "
+        +(hasPe?"A client that resolves the public name will connect at the network layer and be refused by the service. Only its private endpoint is accepted."
+              :"No private endpoint is present in this scan either, so nothing can reach it at the network layer. Confirm a private endpoint exists for the clients that need it."),
+        n.id,"configuration");
+    }
+  }
+  const order={high:0,warn:1,info:2};
+  P.sort((a,b)=>order[a.sev]-order[b.sev]||b.evidence.localeCompare(a.evidence));''')
+
+# C1e: dedicated Private-endpoint-DNS section on the PE panel and on the panel of
+# the service it fronts. Shows the zone, its link count, and per-client-VNet
+# resolution status with the exact verify command (escaped, never run).
+patch("C1e PE-DNS panel section",
+'''  // Why is this resource's traffic being denied?
+  (function(){''',
+'''  // ---- Private endpoint DNS reachability (Check 1) ----
+  (function(){
+    const finds=peDnsFindings();
+    const f=finds.find(x=>x.peId===sel.id)
+      || ((sel.type==="kv"||sel.type==="storage"||sel.type==="sql")?finds.find(x=>x.targetId===sel.id):null);
+    if(!f)return;
+    html+='<div class="secTitle" style="color:#2563EB">Private endpoint DNS</div>';
+    let dm="";
+    if(f.target)dm+="service "+esc(f.target.name)+"<br>";
+    if(f.fqdn)dm+="name "+esc(f.fqdn)+"<br>";
+    dm+="private DNS zone "+(f.zoneName?esc(f.zoneName):'<span style="color:#9A6700">none found in scan</span>')+"<br>";
+    if(f.zoneName)dm+="zone linked to "+f.linkedCount+" VNet"+(f.linkedCount===1?"":"s")+"<br>";
+    if(f.denyOnly)dm+='<span style="color:#9A6700">service refuses all but its private endpoint (networkAcls default Deny)</span><br>';
+    html+='<div class="meta">'+dm+'</div>';
+    if(f.broken.length){
+      for(const b of f.broken)
+        html+='<div class="impairBox"><div class="ih">Resolution unverifiable from '+esc(b.vnetName)+'</div>'
+          +'<div class="iw">This VNet is a client of the endpoint ('+esc(b.via)+') but is not linked to the zone, and it sets custom DNS servers ('+esc(b.dns)+'). The tool cannot see what that resolver returns; if it does not hand back the private IP the client reaches the public endpoint.</div>'
+          +'<div class="iw"><b>Confirm on a client in that VNet:</b></div>'
+          +'<pre data-cmd="Resolve-DnsName '+esc(f.fqdn)+'">Resolve-DnsName '+esc(f.fqdn)+'</pre>'
+          +'<button class="copyFix" data-copy="Resolve-DnsName '+esc(f.fqdn)+'">Copy command</button></div>';
+    } else if(f.clientCount){
+      html+='<div class="meta" style="color:#3ECF8E">Observed client VNets are linked to the zone or use default Azure DNS. Resolution is expected to succeed.</div>';
+    }
+  })();
+
+  // Why is this resource's traffic being denied?
+  (function(){''')
+
+# ---------------------------------------------------------------- CHECK 3
+# Surface the compute / NIC facts already collected. The VM panel names its size,
+# OS, power state (flagged when not running), license and generation, and lists
+# every attached NIC. The NIC panel names its owning VM and flags a per-NIC DNS
+# override that differs from its subnet neighbours.
+patch("C3 VM and NIC facts panels",
+'''  html+='<div class="meta">'+meta+'</div>';
+  if(sel.meta.routes&&sel.meta.routes.length){''',
+'''  html+='<div class="meta">'+meta+'</div>';
+  // ---- Compute facts (Check 3): virtual machine ----
+  if(sel.type==="vm"){
+    let vm="";
+    if(sel.meta.size)vm+="size "+esc(sel.meta.size)+"<br>";
+    if(sel.meta.osName)vm+="OS "+esc(sel.meta.osName)+(sel.meta.osVersion?" "+esc(sel.meta.osVersion):"")+"<br>";
+    if(sel.meta.hyperV)vm+="generation "+esc(sel.meta.hyperV)+"<br>";
+    if(sel.meta.licenseType)vm+="license "+esc(sel.meta.licenseType)+"<br>";
+    if(sel.meta.power)vm+="power "+esc(sel.meta.power)+"<br>";
+    if(vm)html+='<div class="secTitle">Compute</div><div class="meta">'+vm+'</div>';
+    if(sel.meta.power&&!/running/i.test(sel.meta.power))
+      html+='<div class="impairBox"><div class="ih">Power state: '+esc(sel.meta.power)+'</div>'
+        +'<div class="iw">The VM is not running. Nothing it hosts can accept a connection; this is not a network block.</div></div>';
+    const seenNic=new Set();
+    const nics=fullGraph.edges.filter(e=>e.kind==="nicOf"&&e.source===sel.id)
+      .map(e=>byId.get(e.target)).filter(n=>n&&!seenNic.has(n.id)&&seenNic.add(n.id));
+    if(nics.length){
+      html+='<div class="secTitle">Network interfaces ('+nics.length+')</div>';
+      for(const nic of nics)
+        html+='<div class="row" data-nav="'+esc(nic.id)+'"><span style="color:'+TYPES.nic.color+';font-size:11px">\\u25cf</span>'
+          +'<span style="word-break:break-all">'+esc(nic.name)+(nic.meta.ips?' <span style="color:var(--faint)">'+esc(nic.meta.ips)+'</span>':'')
+          +(nic.meta.primaryNic?' <span style="color:var(--hi)">primary</span>':'')+'</span></div>';
+    }
+  }
+  // ---- NIC facts (Check 3) ----
+  if(sel.type==="nic"){
+    let nf="";
+    const owner=fullGraph.edges.filter(e=>e.kind==="nicOf"&&e.target===sel.id).map(e=>byId.get(e.source)).filter(Boolean)[0];
+    if(owner)nf+=(TYPES[owner.type]?TYPES[owner.type].label:owner.type)+" "+esc(owner.name)+"<br>";
+    if(sel.meta.primaryNic)nf+="primary NIC<br>";
+    if(sel.meta.nicDns)nf+='<span style="color:#9A6700">DNS override '+esc(sel.meta.nicDns)+'</span><br>';
+    if(sel.meta.ipForwarding)nf+="IP forwarding enabled<br>";
+    if(sel.meta.accelNet)nf+="accelerated networking<br>";
+    if(sel.meta.defaultOutbound===false)nf+='<span style="color:#9A6700">default outbound connectivity disabled</span><br>';
+    if(nf)html+='<div class="secTitle">Interface</div><div class="meta">'+nf+'</div>';
+    if(sel.meta.nicDns){
+      const sub=fullGraph.edges.filter(e=>e.kind==="inSubnet"&&e.source===sel.id).map(e=>e.target)[0];
+      if(sub){
+        const peers=fullGraph.edges.filter(e=>e.kind==="inSubnet"&&e.target===sub&&e.source!==sel.id)
+          .map(e=>byId.get(e.source)).filter(n=>n&&n.type==="nic");
+        const others=peers.filter(n=>(n.meta.nicDns||"")!==sel.meta.nicDns);
+        if(peers.length&&others.length)
+          html+='<div class="impairBox"><div class="ih">This NIC overrides DNS; neighbours in the subnet do not</div>'
+            +'<div class="iw">'+esc(sel.name)+' resolves through '+esc(sel.meta.nicDns)+' while '+others.length+' other NIC'+(others.length===1?"":"s")+' in the same subnet use the subnet/VNet default. A per-NIC DNS override is easy to miss and can point one host at a resolver that cannot see the private DNS zones.</div>'
+            +'<div class="iw"><b>Confirm on the host:</b></div>'
+            +'<pre data-cmd="Resolve-DnsName &lt;fqdn&gt;">Resolve-DnsName &lt;fqdn&gt;</pre></div>';
+      }
+    }
+  }
+  if(sel.meta.routes&&sel.meta.routes.length){''')
+
+# ---------------------------------------------------------------- CHECK 4
+# "It is not the network" verdicts. Positive evidence only: a firewall Allow row
+# or an observed allowed flow says NOT BLOCKED; a firewall/flow Deny or a
+# blackhole route or a matching AVNM deny says BLOCKED; silence is UNKNOWN, never
+# "allowed". When the path is open, rank the non-network causes by how observable
+# they are and hand the operator the exact command for each — nothing is run.
+patch("C4a pathVerdict + nonNetworkCauses",
+'function renderTrace(){',
+'''// Classify a conversation with positive evidence only. Silence is UNKNOWN.
+function pathVerdict(src,dst,port,proto,steps){
+  const fw=fwVerdictFor(src,dst,port);
+  const obs=observedVerdict(src,dst,port);
+  let blackhole=null;
+  for(const e of fullGraph.edges){
+    if(e.kind!=="traffic"||!e.rows)continue;
+    for(const r of e.rows){ if(r.srcIp===src&&r.dstIp===dst&&(!port||+r.port===+port)&&r.routeDrop){blackhole=r;break;} }
+    if(blackhole)break;
+  }
+  const cfgDeny=steps.find(s=>s.verdict==="deny"&&s.rule&&/avnm/i.test(s.layer));
+  let state="UNKNOWN",cite="",citeKind="none",fixRow=null;
+  if(fw&&fwIsDeny(fw)){
+    state="BLOCKED"; citeKind="fwdeny";
+    cite="Azure Firewall logged a "+(fw.action||"deny")+" for this exact conversation"+(fw.rule?' (rule "'+fw.rule+'")':"")+". "+explainFwDeny(fw);
+    fixRow={srcIp:src,dstIp:dst,port:port,proto:proto,fwRule:fw.rule,fwPolicy:fw.policy,fwGroup:fw.group,fwCollection:fw.collection,fwTable:fw.table,fwReason:fw.reason};
+  } else if(obs&&low(obs.status)==="denied"){
+    state="BLOCKED"; citeKind="flowdeny";
+    cite="VNet flow logs recorded this flow as Denied"+(obs.aclRule?' by "'+obs.aclRule+'"':"")+(obs.layer?" at "+obs.layer:"")+" ("+Number(obs.count).toLocaleString()+" flows). "+(obs.why||"");
+  } else if(blackhole){
+    state="BLOCKED"; citeKind="blackhole";
+    cite="A route with next hop None ("+blackhole.rtName+", "+blackhole.rtPrefix+") discards this on the platform. Nothing logs a deny because no rule is involved.";
+    fixRow=blackhole;
+  } else if(cfgDeny){
+    state="BLOCKED"; citeKind="avnmdeny";
+    cite=cfgDeny.layer+' rule "'+cfgDeny.rule.name+'" ('+cfgDeny.rule.access+") matches this flow. It is evaluated before NSGs and an allow below it cannot override it.";
+    fixRow={srcIp:src,dstIp:dst,port:port,proto:proto,aclRule:cfgDeny.rule.name,aclGroup:cfgDeny.resource};
+  } else if(fw&&!fwIsDeny(fw)){
+    state="NOT BLOCKED"; citeKind="fwallow";
+    cite="Azure Firewall logged an Allow for this exact conversation"+(fw.rule?' (rule "'+fw.rule+'")':"")+". The packet reached the firewall and was permitted \\u2014 the strongest evidence the network path is open.";
+  } else if(obs&&low(obs.status)==="allowed"){
+    state="NOT BLOCKED"; citeKind="flowallow";
+    cite="VNet flow logs recorded "+Number(obs.count).toLocaleString()+" allowed flow(s) for this conversation. The traffic was observed passing, so the network path is open.";
+  } else {
+    cite="Nothing in this scan logged this exact conversation \\u2014 no firewall row, no flow-log row, no blackhole route, no matching AVNM deny. The network path cannot be confirmed either way from this data.";
+  }
+  return {state,cite,citeKind,fw,obs,blackhole,cfgDeny,fixRow};
+}
+// When the network is not the problem, the ordered list of what else could be.
+// DNS and the service ACL are observable from topology/config; RBAC is not, so it
+// ranks lower even though it is a common cause once the path is open.
+function nonNetworkCauses(src,dst,port,proto){
+  const causes=[];
+  const dstNode=ownerOfIp(dst);
+  const finds=peDnsFindings();
+  let pe=null;
+  if(dstNode){
+    if(dstNode.type==="pe")pe=finds.find(f=>f.peId===dstNode.id);
+    else pe=finds.find(f=>f.targetId===dstNode.id);
+  }
+  if(!pe)pe=finds.find(f=>{const p=byId.get(f.peId);return p&&String(p.meta.ips||"").split(/,\\s*/).includes(dst);});
+  const svc=(dstNode&&(dstNode.type==="kv"||dstNode.type==="storage"||dstNode.type==="sql"))?dstNode:(pe&&pe.target)||null;
+  // 1. DNS
+  causes.push({n:1,obs:"observable in topology \\u2014 resolver output is not",title:"DNS resolution",
+    detail:pe
+      ?(pe.broken.length
+          ?"A client VNet reaching "+pe.peName+" uses custom DNS and is not linked to the private DNS zone "+(pe.zoneName||"(none found)")+". If the resolver returns the public IP, the client connects to the public endpoint. This tool cannot see what the resolver returned."
+          :"Confirm the client resolves the private IP of "+pe.peName+", not the public name.")
+      :"Confirm the client resolves the address you expect. This tool cannot see what a resolver returned.",
+    cmd:"Resolve-DnsName "+(pe?pe.fqdn:"<fqdn>")});
+  // 2. Service ACL
+  if(svc&&low(svc.meta.aclDefault||"")==="deny"&&!svc.meta.aclVnetRules&&!svc.meta.aclIpRules)
+    causes.push({n:2,obs:"observable in config",title:"Service network ACL",
+      detail:svc.name+" sets networkAcls.defaultAction Deny with no virtual network rules and no IP rules. A client that arrives on the public name is refused by the service above the network layer; only its private endpoint is accepted."});
+  // 3. Authorization / RBAC
+  causes.push({n:3,obs:"not observable from network data \\u2014 ranked lower for that reason",title:"Authorization / RBAC",
+    detail:"Key Vault access policies or RBAC, storage keys/SAS, SQL logins. This tool sees no identity data, so it can neither confirm nor rule this out \\u2014 but once the path is open it is a common cause."});
+  // 4. Effective routes
+  causes.push({n:4,obs:"partially observable \\u2014 user-defined routes only, not the merged table",title:"Effective routes",
+    detail:"This tool reads UDRs but not the system + BGP + UDR table Azure actually applies. A BGP or system route could still be steering this traffic.",
+    cmd:"az network nic show-effective-route-table --ids <nicId> -o table"});
+  // 5. live probe
+  causes.push({n:5,obs:"authoritative live probe",title:"Confirm the live decision",
+    detail:"Ask the Azure platform directly what it does with this exact packet.",
+    cmd:"az network watcher test-ip-flow --direction Outbound --protocol "+(proto||"TCP")+" --local "+src+":0 --remote "+dst+":"+(port||443)+" --vm <vmName> --nic <nicName>"});
+  return causes;
+}
+function renderTrace(){''')
+
+# C4b: rework renderTrace to lead with the positive-evidence verdict, keep the
+# layer walk and the ground-truth comparison, then either the non-network causes
+# (path open) or a fix box (path blocked).
+patch("C4b renderTrace verdict + causes",
+'''  const steps=tracePath(src,dst,port,proto);
+  const blocked=steps.some(s=>s.verdict==="deny");
+  let html='<div class="statusline">'+esc(src)+' → '+esc(dst)+' :'+port+'/'+esc(proto)+' — '+
+    (blocked?'<b style="color:var(--danger)">blocked</b>':'<b style="color:var(--ok)">allowed by the rules in this scan</b>')+'</div>';''',
+'''  const steps=tracePath(src,dst,port,proto);
+  const blocked=steps.some(s=>s.verdict==="deny");
+  const v=pathVerdict(src,dst,port,proto,steps);
+  const vColor=v.state==="BLOCKED"?"var(--danger)":v.state==="NOT BLOCKED"?"var(--ok)":"#9A6700";
+  let html='<div class="verdictBox" style="border:1px solid '+vColor+';border-radius:10px;padding:12px 14px;margin-bottom:12px">'
+    +'<div style="font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--faint);font-weight:600">Network path</div>'
+    +'<div style="font-size:18px;font-weight:700;color:'+vColor+';margin:2px 0 6px">'+esc(v.state)+'</div>'
+    +'<div class="sd" style="line-height:1.55">'+esc(v.cite)+'</div>'
+    +(v.state==="NOT BLOCKED"?'<div class="sd" style="margin-top:6px;color:var(--dim)">If the connection still fails, the cause is above the network. The ranked list below says where to look, most observable first.</div>':'')
+    +(v.state==="UNKNOWN"?'<div class="sd" style="margin-top:6px;color:var(--dim)">This is not a verdict of "allowed". Load the matching flow logs or run the live probe below to get a real answer.</div>':'')
+    +'</div>';
+  html+='<div class="statusline" style="color:var(--faint)">Layer walk for '+esc(src)+' \\u2192 '+esc(dst)+' :'+port+'/'+esc(proto)+'</div>';''')
+
+# C4c: after the ground-truth block, append the ordered causes (open path) and
+# wire copy buttons inside the trace panel.
+patch("C4c causes + fix box + copy wiring",
+'''  } else {
+    html+='<div class="statusline">This trace evaluates configured rules only. Load VNet flow logs to compare it against what Azure actually did.</div>';
+  }
+  out.innerHTML=html;
+}''',
+'''  } else {
+    html+='<div class="statusline">This trace evaluates configured rules only. Load VNet flow logs to compare it against what Azure actually did.</div>';
+  }
+  if(v.state==="BLOCKED"&&v.fixRow){
+    html+=fixBoxHtml(v.fixRow);
+  } else {
+    const causes=nonNetworkCauses(src,dst,port,proto);
+    html+='<div class="secTitle" style="color:var(--hi);margin-top:14px">If it is not the network, look here \\u2014 in order</div>';
+    for(const c of causes){
+      html+='<div class="impairBox"><div class="ih">'+c.n+'. '+esc(c.title)+' <span style="color:var(--faint);font-weight:400">\\u00b7 '+esc(c.obs)+'</span></div>'
+        +'<div class="iw">'+esc(c.detail)+'</div>'
+        +(c.cmd?'<pre data-cmd="'+esc(c.cmd)+'">'+esc(c.cmd)+'</pre><button class="copyFix" data-copy="'+esc(c.cmd)+'">Copy command</button>':'')
+        +'</div>';
+    }
+    html+='<div class="caveat" style="margin-top:8px">Proposals for review. Nothing in this tool writes to Azure or runs these commands; placeholders in &lt;angle brackets&gt; need your values.</div>';
+  }
+  out.innerHTML=html;
+  out.querySelectorAll(".copyFix").forEach(b=>b.onclick=(ev)=>{
+    ev.stopPropagation();
+    const txt=b.getAttribute("data-copy")||"";
+    const done=()=>{const old=b.textContent;b.textContent="Copied";setTimeout(()=>b.textContent=old,1200);};
+    if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(txt).then(done,()=>{});
+    else{const ta=document.createElement("textarea");ta.value=txt;document.body.appendChild(ta);ta.select();try{document.execCommand("copy");done();}catch(e){}document.body.removeChild(ta);}
+  });
+}''')
+
+# ---------------------------------------------------------------- C5
+# In the hover box, name where the resource lives: subscription, resource group
+# and VNet — so an expanded cluster reads as "azh5pcosql01f (Virtual machine ·
+# in azh5-sql-dr-vnet)" without opening the panel.
+patch("C5 resource group + VNet in the hover box",
+'''+(extra?" \\u00b7 "+esc(extra):"")+'</div>';
+  }''',
+'''+(extra?" \\u00b7 "+esc(extra):"")+'</div>';
+    const _vo=vnetOfCache||computeVnetOf();
+    const _loc=[];
+    if(d.subId&&typeof subNames!=="undefined"&&subNames[d.subId])_loc.push(["Subscription",subNames[d.subId]]);
+    if(d.rg)_loc.push(["Resource group",d.rg]);
+    const _vid=_vo.get(d.id), _vn=(_vid&&typeof byId!=="undefined"&&byId)?byId.get(_vid):null;
+    if(_vn&&_vn.id!==d.id&&_vn.name)_loc.push(["VNet",_vn.name]);
+    for(const _kv of _loc)html+='<div class="tr"><span>'+_kv[0]+'</span><b style="text-align:right;max-width:210px;word-break:break-all">'+esc(_kv[1])+'</b></div>';
+  }''')
+
+# ---------------------------------------------------------------- RULES: top talkers
+# Per rule, fold the sampled flows into source -> destination:port pairs and rank
+# by volume, so the busiest conversations that hit the rule surface first.
+patch("R1a rule detail aggregates top talkers",
+'      const samples=(r.samples||[]).slice(0,10);',
+'''      // Top talkers: fold the sampled flows into source \\u2192 destination:port pairs so the
+      // busiest conversations that hit this rule rank first, not just whichever was seen first.
+      const _tk=new Map();
+      for(const sf of (r.samples||[])){
+        const _k=sf.srcIp+"|"+sf.dstIp+"|"+sf.port+"|"+(sf.proto||"?");
+        let _t=_tk.get(_k);
+        if(!_t){_t={srcIp:sf.srcIp,dstIp:sf.dstIp,port:sf.port,proto:sf.proto,count:0,bytes:0,denied:false,lastTs:0,fwPolicy:sf.fwPolicy,fwCollection:sf.fwCollection,aclRule:sf.aclRule};_tk.set(_k,_t);}
+        _t.count+=sf.count||0; _t.bytes+=sf.bytes||0; if(sf.denied)_t.denied=true; if((sf.lastTs||0)>_t.lastTs)_t.lastTs=sf.lastTs||0;
+      }
+      const talkers=[..._tk.values()].sort((a,b)=>b.count-a.count);
+      const samples=talkers.slice(0,5);''')
+
+patch("R1b rule detail names the top-talkers section",
+"'<div class=\"rd-h\" style=\"margin-top:8px\">Traffic that hit this rule \\u00b7 '+esc(windowLabel())+'</div>'",
+"'<div class=\"rd-h\" style=\"margin-top:8px\">Top talkers \\u00b7 traffic that hit this rule \\u00b7 '+esc(windowLabel())+' <span style=\"color:var(--faint);font-weight:400\">top 5 by flows, source \\u2192 destination:port</span></div>'")
+
+patch("R1c rule detail counts remaining talker pairs",
+'''            + ((r.samples||[]).length>samples.length?'<div class="rd-i" style="color:var(--faint)">+'
+                +((r.samples||[]).length-samples.length)+' more</div>':'') : "")''',
+'''            + (talkers.length>samples.length?'<div class="rd-i" style="color:var(--faint)">+'
+                +(talkers.length-samples.length)+' more source \\u2192 destination pairs</div>':'') : "")''')
+
+# ---------------------------------------------------------------- ANALYSIS: clearer wording
+# "rule is not in this scan" read as a shrug. Say what actually happened, and what
+# to do about it. And "Example paths" is not a thing an operator recognises — the
+# column shows sample denied flows, so call it that.
+patch("A1 explainDeny reads like an explanation",
+'''  if(aclRule)return "rule \\""+aclRule+"\\" is not in this scan (it may live on an NSG you cannot read)";
+  return "Azure did not name a rule for this flow";''',
+'''  if(aclRule)return "Denied by rule \\""+aclRule+"\\". Azure enforced it, but this scan did not read the NSG it lives on, "
+    +"so its ports and prefixes are not shown here. Open that NSG in the portal to see the rule text.";
+  return "Azure denied this flow but did not name the rule that decided it. It is usually an NSG default deny \\u2014 nothing above allowed the flow.";''')
+
+patch("A2 denied table: Sample flows, not Example paths",
+'<th>Blocked flows</th><th>Example paths</th>',
+'<th>Blocked flows</th><th>Sample flows</th>')
+
+# ---------------------------------------------------------------- SaaS polish
+# The Analysis, Rules and Architecture tabs worked but read as raw tables. This
+# is styling only: section headers become real dividers, data tables get quieter
+# gridlines / taller rows / a soft hover, pills go pill-shaped, and the
+# architecture diagram gains depth via a drop shadow on each lane card.
+patch("D1 SaaS polish CSS for Analysis / Rules / Architecture",
+'  svg text{user-select:none}\n</style>',
+'''  svg text{user-select:none}
+
+  /* ---------- SaaS polish: Analysis / Rules / Architecture ---------- */
+  #analysisView .secTitle,#rulesView .secTitle,#archView .secTitle,#metricsView .secTitle{
+    font-size:11px;letter-spacing:.06em;text-transform:uppercase;font-weight:700;color:var(--dim);
+    border-bottom:1px solid var(--line);padding-bottom:7px;margin-top:22px;display:flex;align-items:baseline;gap:8px}
+  #analysisView table,#rulesView table{background:var(--panel)}
+  table.rules th{padding:10px 12px;font-size:9.5px;letter-spacing:.07em;border-bottom:1.5px solid var(--line2)}
+  table.rules td{padding:9px 12px}
+  table.rules tbody tr.rrow{transition:background .1s ease}
+  table.rules tbody tr.rrow:hover td{background:#F4F7FE}
+  .connTable{border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow)}
+  .connTable th{padding:9px 10px;font-size:9.5px;letter-spacing:.06em;font-weight:700;border-bottom:1.5px solid var(--line2)}
+  .connTable td{padding:8px 10px}
+  .connTable tbody tr:hover td{background:#F4F7FE}
+  .connTable tbody tr.bad:hover td{background:#FBE9EB}
+  .pill{padding:2px 9px;border-radius:999px;font-size:9.5px;box-shadow:inset 0 0 0 1px rgba(16,24,40,.05)}
+  .layerPill{border-radius:999px;padding:2px 9px}
+  .bar{height:8px;border-radius:999px}
+  .bar span{border-radius:999px}
+  .mcard{border:1px solid var(--line);box-shadow:var(--shadow);background:var(--panel)}
+  .sevKey{border:1px solid var(--line);background:var(--panel)}
+  #archView .card{border-radius:14px}
+  #archCanvas svg{display:block}
+</style>''')
+
+# D2: give the architecture lanes depth. A shadow flag on the rect helper, a
+# drop-shadow filter in the SVG defs, and the flag set on each lane card.
+patch("D2a rect helper takes a shadow flag",
+'''  const rect=(x,y,w,hh,fill,stroke,rx,dash)=>'<rect x="'+x+'" y="'+y+'" width="'+w+'" height="'+hh+'" rx="'+(rx||10)+
+      '" fill="'+fill+'" stroke="'+stroke+'" stroke-width="1"'+(dash?' stroke-dasharray="'+dash+'"':'')+'/>';''',
+'''  const rect=(x,y,w,hh,fill,stroke,rx,dash,sh)=>'<rect x="'+x+'" y="'+y+'" width="'+w+'" height="'+hh+'" rx="'+(rx||10)+
+      '" fill="'+fill+'" stroke="'+stroke+'" stroke-width="1"'+(dash?' stroke-dasharray="'+dash+'"':'')+(sh?' filter="url(#archShadow)"':'')+'/>';''')
+
+patch("D2b drop-shadow filter in the arch defs",
+'''  const defs='<defs><marker id="archArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">'
+    +'<path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>';''',
+'''  const defs='<defs><marker id="archArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">'
+    +'<path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker>'
+    +'<filter id="archShadow" x="-6%" y="-8%" width="112%" height="128%"><feDropShadow dx="0" dy="1.5" stdDeviation="2.4" flood-color="#101828" flood-opacity="0.10"/></filter>'
+    +'</defs>';''')
+
+patch("D2c edge cards cast a shadow",
+'    P.push(rect(x,y,ew,54,"#FFF7ED","#F6821F",10));',
+'    P.push(rect(x,y,ew,54,"#FFF7ED","#F6821F",10,null,true));')
+
+patch("D2d hub card casts a shadow",
+'    P.push(rect(PAD,y,W-PAD*2,hh,"#EFF6FF","#2F6FEB",12));',
+'    P.push(rect(PAD,y,W-PAD*2,hh,"#EFF6FF","#2F6FEB",12,null,true));')
+
+patch("D2e spoke cards cast a shadow",
+'    P.push(rect(x,rowY,colw,hh,"#F8FAFC",bad?"#DC3545":v.unmanaged?"#E0A02B":"#94A3B8",10));',
+'    P.push(rect(x,rowY,colw,hh,"#F8FAFC",bad?"#DC3545":v.unmanaged?"#E0A02B":"#94A3B8",10,null,true));')
+
+patch("D2f shared/hybrid bands cast a shadow",
+'    P.push(rect(x,bandY,half,hh,fill,stroke,10));',
+'    P.push(rect(x,bandY,half,hh,fill,stroke,10,null,true));')
+
+patch("D2g footer card casts a shadow",
+'  P.push(rect(PAD,y,W-PAD*2,58,"#FFFFFF","#E6E9EF",10));',
+'  P.push(rect(PAD,y,W-PAD*2,58,"#FFFFFF","#E6E9EF",10,null,true));')
+
 open(SRC, "w", encoding="utf-8").write(html)
 print(f"OK — {len(applied)} patch(es) applied:")
 for a in applied:

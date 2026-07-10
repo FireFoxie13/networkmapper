@@ -61,8 +61,12 @@ TOTAL=$(jq 'length' "$TMP/topo.json")
 # index. If the graph query returned none, enumerate them through the management API.
 # Reader is enough; these are GET calls.
 NMGRS=$(jq -r '.[] | select(.type|ascii_downcase == "microsoft.network/networkmanagers") | .id' "$TMP/topo.json" 2>/dev/null || true)
-HAVE_RC=$(jq '[.[] | select(.type|ascii_downcase|test("securityadminconfigurations/rulecollections$"))] | length' "$TMP/topo.json" 2>/dev/null || echo 0)
-if [ -n "${NMGRS:-}" ] && [ "${HAVE_RC:-0}" -eq 0 ]; then
+# Resource Graph often returns the security-admin config and rule-collection CONTAINERS
+# but not the RULE objects inside them, so gate on the rules, not the collections.
+# Otherwise the map has the collection name (resolved from the flow log) but no rule
+# logic to review — which is exactly the "not in this scan" gap.
+HAVE_RULES=$(jq '[.[] | select(.type|ascii_downcase|test("securityadminconfigurations/rulecollections/rules$"))] | length' "$TMP/topo.json" 2>/dev/null || echo 0)
+if [ -n "${NMGRS:-}" ] && [ "${HAVE_RULES:-0}" -eq 0 ]; then
   echo "    AVNM security admin rules (Resource Graph returned none, asking the API)..."
   : > "$TMP/adminrules.json"
   API="2024-05-01"
@@ -118,31 +122,53 @@ if [ -n "${WORKSPACE_ID:-}" ]; then
   # then bucket only those, so the payload stays bounded no matter how long the window
   # is — without ever discarding denied traffic, which is the whole point.
   FW="${FLOW_WINDOW:-24h}"
+  # NTANetAnalytics leaves SrcIp/DestIp BLANK for AzurePublic and ExternalPublic flows
+  # (documented behaviour: the address is public, so it is reported in Src/DestPublicIps
+  # instead, bar-delimited as "<IP> | started | ended | outPkts | inPkts | outBytes | inBytes").
+  # The old query grouped on the blank IP, so every public/external flow — inbound Cloudflare
+  # WAF, egress to SaaS, Azure service traffic: ~89% of bytes here — collapsed to one empty
+  # row and the mapper dropped it. Recover the real address into SrcIp/DestIp, and carry the
+  # Azure-provided enrichment (service tag, country, region, L7) so the map can NAME the far
+  # end (e.g. "Cloudflare", "Storage.centralus") instead of a bare IP.
   KQL="let W = ${FW};
-let denied = NTANetAnalytics
-| where TimeGenerated > ago(W) and SubType == 'FlowLog' and FlowStatus == 'Denied'
+let base = NTANetAnalytics
+| where TimeGenerated > ago(W) and SubType == 'FlowLog'
+| extend SrcIp  = iif(isempty(SrcIp),  extract(@'^\s*([0-9A-Fa-f:.]+)', 1, tostring(SrcPublicIps)),  SrcIp)
+| extend DestIp = iif(isempty(DestIp), extract(@'^\s*([0-9A-Fa-f:.]+)', 1, tostring(DestPublicIps)), DestIp)
+| where isnotempty(SrcIp) and isnotempty(DestIp);
+let denied = base
+| where FlowStatus == 'Denied'
 | summarize F = count() by SrcIp, DestIp, DestPort, L4Protocol, FlowStatus
 | top 3000 by F
 | project SrcIp, DestIp, DestPort, L4Protocol, FlowStatus;
-let allowed = NTANetAnalytics
-| where TimeGenerated > ago(W) and SubType == 'FlowLog' and FlowStatus != 'Denied'
+let allowed = base
+| where FlowStatus != 'Denied'
 | summarize F = count() by SrcIp, DestIp, DestPort, L4Protocol, FlowStatus
 | top 2000 by F
 | project SrcIp, DestIp, DestPort, L4Protocol, FlowStatus;
 // Denied flows are rare next to allowed ones, so a plain top-by-count would drop them
 // entirely. Select them separately and always keep them.
 let busiest = union denied, allowed;
-NTANetAnalytics
-| where TimeGenerated > ago(W) and SubType == 'FlowLog'
+base
 | join kind=inner busiest on SrcIp, DestIp, DestPort, L4Protocol, FlowStatus
 | summarize Flows = count(),
             BytesSrcToDest = sum(BytesSrcToDest),
-            BytesDestToSrc = sum(BytesDestToSrc)
+            BytesDestToSrc = sum(BytesDestToSrc),
+            SrcServiceTags = take_any(SrcServiceTags),
+            DestServiceTags = take_any(DestServiceTags),
+            Country = take_any(Country),
+            AzureRegion = take_any(AzureRegion),
+            L7Protocol = take_any(L7Protocol)
     by Bucket = bin(TimeGenerated, 30m), SrcIp, DestIp, DestPort, L4Protocol, FlowStatus,
-       AclRule, AclGroup, FlowType, PrivateEndpointResourceId, FlowDirection
+       AclRule, AclGroup, FlowType, PrivateEndpointResourceId
 | summarize Flows = max(Flows),
             BytesSrcToDest = max(BytesSrcToDest),
-            BytesDestToSrc = max(BytesDestToSrc)
+            BytesDestToSrc = max(BytesDestToSrc),
+            SrcServiceTags = take_any(SrcServiceTags),
+            DestServiceTags = take_any(DestServiceTags),
+            Country = take_any(Country),
+            AzureRegion = take_any(AzureRegion),
+            L7Protocol = take_any(L7Protocol)
     by Bucket, SrcIp, DestIp, DestPort, L4Protocol, FlowStatus,
        AclRule, AclGroup, FlowType, PrivateEndpointResourceId
 | top 20000 by Flows"
@@ -201,11 +227,40 @@ union isfuzzy=true AZFWNetworkRule, AZFWApplicationRule, AZFWNatRule, AZFWThreat
   else
     echo "      $FWN firewall rule decisions"
   fi
+
+  # ---- Azure's own rule recommendations. Traffic Analytics evaluates observed flows and
+  # publishes a verdict per traffic pattern: Allow, Block, or Advisory (review). This is
+  # Microsoft's authoritative take on "should this be allowed — is the rule legitimate?".
+  # https://learn.microsoft.com/azure/azure-monitor/reference/tables/ntarulerecommendation
+  echo "    Azure rule recommendations (NTARuleRecommendation)..."
+  RECOKQL="let W = ${FW};
+NTARuleRecommendation
+| where TimeGenerated > ago(W)
+| summarize arg_max(TimeGenerated, *) by RecommendedRuleName, RecommendedAction, RuleScope, L4Protocol, DestPortsRanges
+| project TimeGenerated, RecommendedAction, RecommendedRuleName, RuleScope, L4Protocol, DestPortsRanges, PortCategory,
+          SrcPublicIpCidrs, DestPublicIpCidrs, SrcServiceTagsList, DestServiceTagsList, SrcSubscriptionId, DestSubscriptionId
+| top 5000 by TimeGenerated"
+  : > "$TMP/recos_raw.json"
+  OLDIFS=$IFS; IFS=','
+  for WS in $WORKSPACE_ID; do
+    IFS=$OLDIFS
+    WS=$(printf '%s' "$WS" | tr -d '[:space:]')
+    [ -z "$WS" ] && continue
+    if az monitor log-analytics query -w "$WS" --analytics-query "$RECOKQL" -o json > "$TMP/reco.json" 2>/dev/null; then
+      jq -c '.[]' "$TMP/reco.json" >> "$TMP/recos_raw.json" 2>/dev/null || true
+    fi
+    IFS=','
+  done
+  IFS=$OLDIFS
+  jq -s '.' "$TMP/recos_raw.json" > "$TMP/recos.json" 2>/dev/null || echo "[]" > "$TMP/recos.json"
+  echo "    $(jq 'length' "$TMP/recos.json") rule recommendations (Allow / Block / Advisory)"
 else
   echo "    skipped (set WORKSPACE_ID to one or more Log Analytics workspace GUIDs, comma-separated)"
   echo "[]" > "$TMP/fwlogs.json"
+  echo "[]" > "$TMP/recos.json"
 fi
 [ -f "$TMP/fwlogs.json" ] || echo "[]" > "$TMP/fwlogs.json"
+[ -f "$TMP/recos.json" ] || echo "[]" > "$TMP/recos.json"
 
 echo "[5/6] Subscription names + inventory..."
 az account list --all --query "[].{subscriptionId:id,name:name}" -o json > "$TMP/subs.json" || echo "[]" > "$TMP/subs.json"
@@ -312,6 +367,28 @@ else
   echo "    skipped (set METRICS=1; needs the Monitoring Reader role)"
 fi
 
+# The tool otherwise reads AUTHORED user-defined routes. The EFFECTIVE route table — UDRs,
+# BGP-learned and system routes as Azure actually applies them — is only available per-NIC
+# via Network Watcher, so it is opt-in (one call per NIC). This closes the "reads UDRs, not
+# the effective route table" caveat when enabled.
+echo "[6b/6] Effective routes (per NIC, Network Watcher)..."
+echo "[]" > "$TMP/effroutes.json"
+if [ -n "${EFFECTIVE_ROUTES:-}" ]; then
+  : > "$TMP/effroutes_raw.json"
+  jq -r '.[] | select((.type|ascii_downcase)=="microsoft.network/networkinterfaces") | .id' "$TMP/topo.json" \
+  | while read -r NICID; do
+      [ -z "$NICID" ] && continue
+      az network nic show-effective-route-table --ids "$NICID" -o json 2>/dev/null \
+        | jq -c --arg nic "$NICID" '{nicId:$nic, routes:[.value[]? | {prefix:((.addressPrefix // [])[0] // ""), nextHopType:.nextHopType, nextHopIp:((.nextHopIpAddress // [])[0] // ""), source:.source, state:.state}]}' \
+        >> "$TMP/effroutes_raw.json" 2>/dev/null || true
+    done
+  jq -s '[.[] | select(.routes | length > 0)]' "$TMP/effroutes_raw.json" > "$TMP/effroutes.json" 2>/dev/null || echo "[]" > "$TMP/effroutes.json"
+  echo "    $(jq 'length' "$TMP/effroutes.json") NIC effective-route tables"
+else
+  echo "    skipped (set EFFECTIVE_ROUTES=1; one Network Watcher call per NIC, needs Reader on the NICs)"
+fi
+[ -f "$TMP/effroutes.json" ] || echo "[]" > "$TMP/effroutes.json"
+
 jq -n \
   --slurpfile t "$TMP/topo.json" \
   --slurpfile d "$TMP/dns.json" \
@@ -320,8 +397,10 @@ jq -n \
   --slurpfile st "$TMP/sites.json" \
   --slurpfile mt "$TMP/metrics.json" \
   --slurpfile fw "$TMP/fwlogs.json" \
+  --slurpfile rc "$TMP/recos.json" \
+  --slurpfile er "$TMP/effroutes.json" \
   --arg scanned "$STAMP" --arg scannedIso "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  '{topology:$t[0], dns:$d[0], flows:$f[0], subs:$s[0], sites:$st[0], metrics:$mt[0], fwlogs:$fw[0], scanned:$scanned, scannedIso:$scannedIso}' > "$TMP/embed.json"
+  '{topology:$t[0], dns:$d[0], flows:$f[0], subs:$s[0], sites:$st[0], metrics:$mt[0], fwlogs:$fw[0], recos:$rc[0], effectiveRoutes:$er[0], scanned:$scanned, scannedIso:$scannedIso}' > "$TMP/embed.json"
 
 python3 - "$TEMPLATE" "$TMP/embed.json" "$OUT" << 'PYEOF'
 import sys, json

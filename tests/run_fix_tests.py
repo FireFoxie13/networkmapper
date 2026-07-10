@@ -122,10 +122,29 @@ try:
         check("clicking a deny rule expands its detail", opened.get("found") and opened.get("shown"), opened)
         check("expanded rule shows the traffic that hit it",
               "traffic that hit this rule" in opened.get("txt", "").lower(), opened.get("txt", "")[:160])
+        check("expanded rule ranks its top talkers",
+              "top talkers" in opened.get("txt", "").lower(), opened.get("txt", "")[:160])
         check("expanded rule shows real flows", "172.22.52.70" in opened.get("txt", ""))
         check("expanded deny rule carries the recommended fix",
               "RECOMMENDED FIX" in opened.get("txt", "").upper() and "az network nsg rule create" in opened.get("txt", ""))
         check("rules tab still error-free", not errors, errors[:2])
+
+        # ---------- Analysis tab: clearer wording ----------
+        page.click("#tabAnalysis"); page.wait_for_timeout(1200)
+        ana = page.inner_text("#analysisView")
+        heads = page.eval_on_selector_all("#anaList th", "e=>e.map(x=>x.textContent)")
+        check("Analysis denied table labels sample flows, not 'Example paths'",
+              "Sample flows" in heads and "Example paths" not in heads, heads)
+        check("Analysis does not shrug 'not in this scan' at a denied rule",
+              "is not in this scan (it may live on an NSG you cannot read)" not in ana)
+
+        # ---------- Architecture tab: depth on the lane cards ----------
+        page.click("#tabArch"); page.wait_for_timeout(900)
+        arch = page.evaluate("""() => {const s=document.getElementById('archSvg');
+            return s ? {def: s.innerHTML.includes('archShadow'),
+                        used: (s.innerHTML.match(/url\\(#archShadow\\)/g)||[]).length} : null;}""")
+        check("Architecture defines a card drop-shadow and applies it to lane cards",
+              arch and arch["def"] and arch["used"] >= 1, arch)
 
         # ---------- firewall rules rebuilt from logs, with times ----------
         # A policy whose rule collections Resource Graph did not return, as in production.
@@ -147,7 +166,7 @@ try:
         # ---------- Rules tab: window control, timestamps, provenance ----------
         page.click("#tabRules"); page.wait_for_timeout(1500)
         check("rules tab has its own time window",
-              page.eval_on_selector_all("#ruleWin option", "e=>e.length") == 7)
+              page.eval_on_selector_all("#ruleWin option", "e=>e.length") == 8)  # 7 presets + Custom range
         check("rules header states the window it counts over",
               "Traffic counts cover" in page.eval_on_selector_all("#rulesView .statusline","e=>e.map(x=>x.textContent).join(' ')"))
         det = page.evaluate("""() => {
@@ -230,6 +249,113 @@ try:
         untangled = page.evaluate(MEASURE)
         check(f"Untangle cuts overlapping labels ({normal} -> {untangled})", untangled < normal * 0.5, (normal, untangled))
         check("dense mesh renders without errors", not errors, errors[:2])
+
+        # =================================================================
+        # The azh5pcosql01f incident: four checks on incident-scan.html.
+        # =================================================================
+        errors.clear()
+        page.goto(f"http://127.0.0.1:{PORT}/incident-scan.html")
+        page.wait_for_timeout(2400)
+        check("incident scan loads with zero errors", not errors, errors[:2])
+
+        ids = page.evaluate("""() => {const o={};
+            for(const n of fullGraph.nodes) o[n.name]=n.id; return o;}""")
+        def panel(node_id):
+            return page.evaluate("(id)=>{selected=id;renderPanel();return document.getElementById('panel').innerText;}", node_id)
+        def trace(src, dst, port):
+            return page.evaluate("""(a)=>{document.getElementById('tSrc').value=a.src;
+                document.getElementById('tDst').value=a.dst;document.getElementById('tPort').value=a.port;
+                document.getElementById('tProto').value='TCP';renderTrace();
+                const el=document.getElementById('tResult');
+                return {txt:el.innerText, fixbox:!!el.querySelector('.fixBox')};}""",
+                {"src": src, "dst": dst, "port": port})
+
+        model = page.evaluate("""() => {
+            const finds=peDnsFindings();
+            const cp=connectivityProblems();
+            const kv=fullGraph.nodes.find(n=>n.name==='azg5pcosqlkv01');
+            const vaultF=finds.find(f=>f.peName==='azg5pcosqlkv01-pe');
+            const blobF=finds.find(f=>f.peName==='azg5pcosqlsa01-pe');
+            const pedns=cp.filter(c=>c.kind==='pednsunverif');
+            const denyonly=cp.filter(c=>c.kind==='denyonlype');
+            return {
+              vaultBroken: vaultF?vaultF.broken.map(b=>b.vnetName):[],
+              vaultZone: vaultF?vaultF.zoneName:'',
+              vaultDenyOnly: vaultF?vaultF.denyOnly:false,
+              blobBroken: blobF?blobF.broken.map(b=>b.vnetName):[],
+              pednsHigh: pedns.filter(c=>c.sev==='high').map(c=>({title:c.title,detail:c.detail,node:c.nodeId})),
+              pednsCmd: pedns.map(c=>c.detail).join(' '),
+              vaultId: kv?kv.id:'',
+              denyonlyInfo: denyonly.filter(c=>c.sev==='info').map(c=>c.title),
+            };}""")
+
+        # ---------- Check 1: private endpoint DNS reachability ----------
+        check("Check1: DR VNet flagged as unable to verify the vault private endpoint",
+              model["vaultBroken"] == ["azh5-sql-dr-vnet"], model["vaultBroken"])
+        check("Check1: the flagged zone is the vaultcore privatelink zone",
+              model["vaultZone"] == "privatelink.vaultcore.azure.net", model["vaultZone"])
+        check("Check1: healthy side is silent (blob zone links the DR VNet, no flag)",
+              model["blobBroken"] == [], model["blobBroken"])
+        check("Check1: the finding names the exact Resolve-DnsName command",
+              "Resolve-DnsName azg5pcosqlkv01.privatelink.vaultcore.azure.net" in model["pednsCmd"])
+
+        # ---------- Check 2: services that refuse all but their private endpoint ----------
+        check("Check2: vault refuses everything except its PE (deny-only)", model["vaultDenyOnly"])
+        check("Check2: with a broken client it is a connectivity problem, not an info note",
+              len(model["pednsHigh"]) == 1 and model["pednsHigh"][0]["node"] == model["vaultId"]
+              and "unreachable" in model["pednsHigh"][0]["title"], model["pednsHigh"])
+        check("Check2: a deny-only service with healthy clients gets the info note",
+              "Reachable only through its private endpoint: azg5pcosqlsa01" in model["denyonlyInfo"],
+              model["denyonlyInfo"])
+
+        # ---------- Check 3: compute / NIC facts ----------
+        drnic = panel(ids["azh5pcosql01f-nic"])
+        check("Check3: NIC panel names the owning VM", "azh5pcosql01f" in drnic and "Virtual machine" in drnic)
+        check("Check3: NIC panel surfaces the per-NIC DNS override", "DNS override 172.21.10.4" in drnic)
+        check("Check3: a lone DNS override is flagged against its subnet neighbours",
+              "This NIC overrides DNS" in drnic and "neighbours in the subnet do not" in drnic)
+        drvm = panel(ids["azh5pcosql01f"])
+        check("Check3: VM panel surfaces compute facts", "Standard_E8s_v5" in drvm and "VM running" in drvm)
+        check("Check3: each attached NIC is listed once (no duplicate nicOf edge)",
+              "NETWORK INTERFACES (1)" in drvm.upper())
+        oldvm = panel(ids["azh5dr-old01"])
+        check("Check3: a stopped VM is flagged as impaired",
+              "VM deallocated" in oldvm and "not running" in oldvm)
+        tip = page.evaluate("""(nm)=>{const d=fullGraph.nodes.find(n=>n.name===nm);
+            showTip({clientX:100,clientY:100},d);return document.getElementById('tip').innerText;}""",
+            "azh5pcosql01f")
+        check("Check3: hover box names type, resource group and VNet for a node",
+              "Virtual machine" in tip and "azh5-sql-dr-westus" in tip and "azh5-sql-dr-vnet" in tip)
+
+        # ---------- Check 4: "it is not the network" verdicts ----------
+        openv = trace("172.21.10.10", "172.20.10.20", 443)
+        i_dns = openv["txt"].find("1. DNS resolution")
+        i_rbac = openv["txt"].find("3. Authorization")
+        check("Check4: firewall Allow yields Network path NOT BLOCKED",
+              "NOT BLOCKED" in openv["txt"] and "BLOCKED" in openv["txt"])
+        check("Check4: the verdict cites the firewall Allow row",
+              "Azure Firewall logged an Allow" in openv["txt"])
+        check("Check4: non-network causes lead with DNS",
+              i_dns != -1 and i_rbac != -1 and i_dns < i_rbac, (i_dns, i_rbac))
+        check("Check4: DNS cause carries a Resolve-DnsName command",
+              "Resolve-DnsName azg5pcosqlkv01.privatelink.vaultcore.azure.net" in openv["txt"])
+        check("Check4: effective-routes and test-ip-flow are offered as later steps",
+              "show-effective-route-table" in openv["txt"] and "test-ip-flow" in openv["txt"])
+
+        unknownv = trace("172.21.10.11", "172.20.10.20", 443)
+        check("Check4: no logged evidence yields UNKNOWN, never 'allowed'",
+              "UNKNOWN" in unknownv["txt"] and 'not a verdict of "allowed"' in unknownv["txt"])
+
+        errors.clear()
+        page.goto(f"http://127.0.0.1:{PORT}/incident-scan-blocked.html")
+        page.wait_for_timeout(2000)
+        blockedv = trace("172.21.10.10", "172.20.10.20", 443)
+        check("Check4: flipping the firewall row to Deny flips the verdict to BLOCKED",
+              "BLOCKED" in blockedv["txt"] and "NOT BLOCKED" not in blockedv["txt"])
+        check("Check4: the BLOCKED verdict cites the firewall Deny and offers a fix box",
+              "Azure Firewall logged a Deny" in blockedv["txt"] and blockedv["fixbox"])
+        check("incident-blocked scan renders without errors", not errors, errors[:2])
+
         browser.close()
 finally:
     server.terminate()
