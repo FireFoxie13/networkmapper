@@ -3214,6 +3214,205 @@ patch("E2 dependency root shows the hover tooltip and opens on click",
     .on("mousemove",(ev)=>moveTip(ev))
     .on("mouseleave",()=>hideTip());''')
 
+# ---------------------------------------------------------------- F1
+# The detail panel clipped wide tables (Connections, effective rules) because
+# .connTable is overflow:hidden and its cells are nowrap. Let those tables scroll
+# sideways inside the panel so nothing is lost off the right edge.
+patch("F1 detail panel scrolls wide tables instead of clipping them",
+'  #archCanvas svg{display:block}\n</style>',
+'''  #archCanvas svg{display:block}
+  #panel .connTable{overflow-x:auto}
+  #panel table{max-width:100%}
+  .mcard.navcard{cursor:pointer;transition:border-color .1s ease,box-shadow .1s ease}
+  .mcard.navcard:hover{border-color:var(--hi);box-shadow:0 0 0 3px rgba(47,111,235,.10)}
+</style>''')
+
+# ---------------------------------------------------------------- F2
+# The dependency nodes printed subscription and resource group beside every
+# circle. That is now all in the hover box, so drop the two crowded lines and
+# keep just the name and IP next to the node.
+patch("F2 declutter dependency node labels",
+'''      // Where does it live — subscription on one line, resource group on the next.
+      const trunc34=t2=>t2.length>34?t2.slice(0,33)+"…":t2;
+      const whereSub=nd.subId?(subNames[nd.subId]||nd.subId.slice(0,8)):"";
+      if(whereSub) halo(node.append("text")).attr("x",side==="left"?x-17:x+17).attr("y",y+25)
+        .attr("text-anchor",side==="left"?"end":"start")
+        .attr("font-size",8.5).attr("fill","#AEB7C4").text(trunc34(whereSub));
+      if(nd.rg) halo(node.append("text")).attr("x",side==="left"?x-17:x+17).attr("y",y+36)
+        .attr("text-anchor",side==="left"?"end":"start")
+        .attr("font-size",8.5).attr("fill","#AEB7C4").text(trunc34(nd.rg));''',
+'''      // Subscription / resource group / VNet now live in the hover box, so the
+      // node keeps just its name and IP — hover any node for the full detail.''')
+
+# ---------------------------------------------------------------- F3
+# Make the architecture diagram interactive: each VNet and subnet card is a link
+# to that resource on the map, and long names are clipped to the card width so
+# nothing spills outside the box.
+patch("F3a rect helper takes a nav id",
+'''  const rect=(x,y,w,hh,fill,stroke,rx,dash,sh)=>'<rect x="'+x+'" y="'+y+'" width="'+w+'" height="'+hh+'" rx="'+(rx||10)+
+      '" fill="'+fill+'" stroke="'+stroke+'" stroke-width="1"'+(dash?' stroke-dasharray="'+dash+'"':'')+(sh?' filter="url(#archShadow)"':'')+'/>';''',
+'''  const rect=(x,y,w,hh,fill,stroke,rx,dash,sh,nav)=>'<rect x="'+x+'" y="'+y+'" width="'+w+'" height="'+hh+'" rx="'+(rx||10)+
+      '" fill="'+fill+'" stroke="'+stroke+'" stroke-width="1"'+(dash?' stroke-dasharray="'+dash+'"':'')+(sh?' filter="url(#archShadow)"':'')+(nav?' data-nav="'+nav+'" class="archNav"':'')+'/>';
+  const clip=(s,px)=>{const max=Math.max(3,Math.floor(px/6.6));return (s||"").length>max?(s||"").slice(0,max-1)+"\\u2026":(s||"");};''')
+
+patch("F3b subnets carry their id so the card can link to them",
+'subnets:subnetsOf(v.id).map(s=>({name:s.name,prefix:s.meta.prefix||"",badges:badgesOf(s.id),occ:occupantsOf(s.id),bad:badNodes.has(s.id)}))',
+'subnets:subnetsOf(v.id).map(s=>({id:s.id,name:s.name,prefix:s.meta.prefix||"",badges:badgesOf(s.id),occ:occupantsOf(s.id),bad:badNodes.has(s.id)}))')
+
+patch("F3c hub card links to the hub VNet",
+'    P.push(rect(PAD,y,W-PAD*2,hh,"#EFF6FF","#2F6FEB",12,null,true));',
+'    P.push(rect(PAD,y,W-PAD*2,hh,"#EFF6FF","#2F6FEB",12,null,true,esc(M.hub.id)));')
+
+patch("F3d hub subnet cards link to the subnet",
+'        P.push(rect(px,py,w,26,"#FFFFFF",s.bad?"#DC3545":"#BFDBFE",6));',
+'        P.push(rect(px,py,w,26,"#FFFFFF",s.bad?"#DC3545":"#BFDBFE",6,null,false,s.id?esc(s.id):null));')
+
+patch("F3e spoke card links to its VNet",
+'    P.push(rect(x,rowY,colw,hh,"#F8FAFC",bad?"#DC3545":v.unmanaged?"#E0A02B":"#94A3B8",10,null,true));',
+'    P.push(rect(x,rowY,colw,hh,"#F8FAFC",bad?"#DC3545":v.unmanaged?"#E0A02B":"#94A3B8",10,null,true,esc(v.id)));')
+
+patch("F3f spoke subnet cards link to the subnet",
+'        P.push(rect(x+12,sy,colw-24,24,"#FFFFFF",s.bad?"#DC3545":"#E2E8F0",6));',
+'        P.push(rect(x+12,sy,colw-24,24,"#FFFFFF",s.bad?"#DC3545":"#E2E8F0",6,null,false,s.id?esc(s.id):null));')
+
+patch("F3g spoke and subnet names clip to the card width",
+'    P.push(txt(x+38,rowY+22,v.name,12,"#1B2330",600));',
+'    P.push(txt(x+38,rowY+22,clip(v.name,colw-54),12,"#1B2330",600));')
+
+patch("F3h subnet name clips to the card width",
+'        P.push(txt(x+36,sy+11,s.name,9.5,"#1B2330",500));',
+'        P.push(txt(x+36,sy+11,clip(s.name,colw-70),9.5,"#1B2330",500));')
+
+patch("F3i wire the architecture links + let text pass clicks through",
+'''  host.innerHTML='<svg id="archSvg" viewBox="0 0 '+W+' '+y+'" width="100%" style="background:#FFFFFF;border-radius:10px">'+defs+P.join("")+'</svg>';''',
+'''  host.innerHTML='<svg id="archSvg" viewBox="0 0 '+W+' '+y+'" width="100%" style="background:#FFFFFF;border-radius:10px">'
+    +'<style>#archSvg text{pointer-events:none}#archSvg .archNav{cursor:pointer}#archSvg .archNav:hover{stroke-width:2.4}</style>'
+    +defs+P.join("")+'</svg>';
+  host.querySelectorAll("[data-nav]").forEach(el=>el.addEventListener("click",()=>{
+    const id=el.getAttribute("data-nav"); if(!byId.has(id))return;
+    showTab("map"); selected=id; renderAll();}));''')
+
+# ---------------------------------------------------------------- F4
+# The Metrics summary cards were dead. Make the ones that point at a specific
+# resource (SNAT, firewall health, unhealthy backends, latency, hybrid link)
+# clickable straight to that resource, and say so.
+patch("F4a mcard can carry a nav id",
+'''function mcard(label,value,sub){
+  return '<div class="mcard"><div class="ml">'+esc(label)+'</div><div class="mv">'+esc(value)+'</div><div class="ms">'+esc(sub)+'</div></div>';
+}''',
+'''function mcard(label,value,sub,nav){
+  return '<div class="mcard'+(nav?' navcard':'')+'"'+(nav?' data-nav="'+esc(nav)+'"':'')+'><div class="ml">'+esc(label)+'</div><div class="mv">'+esc(value)+'</div><div class="ms">'+esc(sub)+'</div></div>';
+}''')
+
+patch("F4b metrics cards link to the worst resource",
+'''  const lat=rows.map(r=>pick2(r,/firewalllatencypng/i)).filter(Boolean);
+  const worstLat=lat.length?Math.max(...lat.map(v=>v.max??v.avg??0)):null;''',
+'''  const lat=rows.map(r=>pick2(r,/firewalllatencypng/i)).filter(Boolean);
+  const worstLat=lat.length?Math.max(...lat.map(v=>v.max??v.avg??0)):null;
+  const worstNode=(rx,mode)=>{let best=null,bv=mode==="min"?Infinity:-Infinity;
+    for(const r of rows){const v=pick2(r,rx);if(!v)continue;
+      const val=mode==="min"?(v.avg??100):(v.max??v.avg??0);
+      if(mode==="min"?val<bv:val>bv){bv=val;best=r.node;}}return best;};
+  const snatN=worstNode(/snatportutilization/i,"max");
+  const fwHealthN=worstNode(/firewallhealth/i,"min");
+  const unhealthyN=worstNode(/unhealthyhostcount/i,"max");
+  const bgpN=worstNode(/bgpavailability|arpavailability/i,"min");
+  const latN=worstNode(/firewalllatencypng/i,"max");''')
+
+patch("F4c wire the nav ids into the cards + hint",
+'''  let html='<div class="mcards">'
+    +mcard("Data transferred",totalBytes?fmtBytes(totalBytes):"—","from flow logs")
+    +mcard("Denied flows",String(fullGraph.edges.filter(e=>e.kind==="traffic"&&e.denied).length),"blocked paths")
+    +mcard("SNAT port peak",snatPeak!=null?snatPeak.toFixed(0)+"%":"—",snatPeak!=null&&snatPeak>=95?"exhausted — new connections may fail":"95% is exhaustion")
+    +mcard("Firewall health",worstHealth!=null?worstHealth.toFixed(0)+"%":"—",worstHealth!=null&&worstHealth<100?"degraded":"lowest observed")
+    +mcard("Unhealthy backends",String(unhealthy),"App Gateway / LB pools")
+    +mcard("Hybrid link availability",worstBgp!=null?worstBgp.toFixed(0)+"%":"—","BGP / ARP, lowest")
+    +mcard("Firewall latency peak",worstLat!=null?worstLat.toFixed(1)+" ms":"—","1-10 ms is normal")
+    +mcard("Flows observed",totalFlows?totalFlows.toLocaleString():"—","24h window")
+    +'</div>';''',
+'''  let html='<div class="mcards">'
+    +mcard("Data transferred",totalBytes?fmtBytes(totalBytes):"—","from flow logs")
+    +mcard("Denied flows",String(fullGraph.edges.filter(e=>e.kind==="traffic"&&e.denied).length),"blocked paths")
+    +mcard("SNAT port peak",snatPeak!=null?snatPeak.toFixed(0)+"%":"—",snatPeak!=null&&snatPeak>=95?"exhausted — new connections may fail":"95% is exhaustion",snatN&&snatN.id)
+    +mcard("Firewall health",worstHealth!=null?worstHealth.toFixed(0)+"%":"—",worstHealth!=null&&worstHealth<100?"degraded — open it":"lowest observed",fwHealthN&&fwHealthN.id)
+    +mcard("Unhealthy backends",String(unhealthy),"App Gateway / LB pools",unhealthyN&&unhealthyN.id)
+    +mcard("Hybrid link availability",worstBgp!=null?worstBgp.toFixed(0)+"%":"—","BGP / ARP, lowest",bgpN&&bgpN.id)
+    +mcard("Firewall latency peak",worstLat!=null?worstLat.toFixed(1)+" ms":"—","1-10 ms is normal",latN&&latN.id)
+    +mcard("Flows observed",totalFlows?totalFlows.toLocaleString():"—","24h window")
+    +'</div>'
+    +'<div class="statusline" style="margin-top:6px">Click any highlighted card or resource row to open it on the map.</div>';''')
+
+# ---------------------------------------------------------------- G — Metrics rebuild
+# The Metrics tab was a wall of numbers with nothing to act on. Rebuild it around
+# what a network engineer actually asks, in the spirit of Microsoft's Azure
+# Firewall Workbook: what is being blocked (click a row to trace it), and what is
+# the firewall actually deciding. The existing talkers / platform tables stay.
+patch("G1 Metrics: top blocked conversations + firewall decisions",
+'  html+=\'<div class="secTitle" style="margin-top:16px">Data transferred by resource</div>\';',
+'''  // ---- What is actually being blocked (the first thing an engineer asks) ----
+  {
+    const dp=deniedPaths().filter(d=>scope==="all"||(d.dst&&d.dst.subId===scope)||(d.src&&d.src.subId===scope));
+    const agg=new Map();
+    for(const d of dp){
+      const k=d.srcIp+"|"+d.dstIp+"|"+d.port+"|"+(d.proto||"?");
+      let t=agg.get(k);
+      if(!t){t={srcIp:d.srcIp,dstIp:d.dstIp,port:d.port,proto:d.proto,dst:d.dst,layer:d.layer,rule:d.rule,count:0};agg.set(k,t);}
+      t.count+=d.count||0;
+    }
+    const convos=[...agg.values()].sort((a,b)=>b.count-a.count);
+    html+='<div class="secTitle" style="margin-top:16px">Top blocked conversations'
+      +'<span style="color:var(--faint);font-weight:400;text-transform:none;letter-spacing:0"> '
+      +(convos.length?convos.length+' distinct source \\u2192 destination:port pairs':'none blocked in this window')+'</span></div>';
+    if(convos.length){
+      html+='<div class="connTable"><table><thead><tr><th>Source</th><th>Destination</th><th>Port</th><th>Blocked at</th><th>Rule</th><th class="ct">Blocked</th></tr></thead><tbody>';
+      for(const c of convos.slice(0,15)){
+        const dn=(c.dst&&c.dst.name)||c.dstIp;
+        html+='<tr class="bad" data-trace-src="'+esc(c.srcIp)+'" data-trace-dst="'+esc(c.dstIp)+'" data-trace-port="'+esc(c.port)+'" title="Trace this in Troubleshoot">'
+          +'<td class="mono">'+esc(c.srcIp)+'</td>'
+          +'<td class="nm">'+esc(dn)+' <span style="color:var(--faint)">'+esc(c.dstIp)+'</span></td>'
+          +'<td class="pt">'+esc(c.port)+'/'+esc(c.proto||"?")+'</td>'
+          +'<td>'+esc(c.layer||"?")+'</td>'
+          +'<td class="mono" style="color:var(--danger)">'+esc(c.rule||"\\u2014")+'</td>'
+          +'<td class="ct" style="font-weight:600">'+Number(c.count).toLocaleString()+'</td></tr>';
+      }
+      html+='</tbody></table></div>';
+      html+='<div class="statusline" style="margin-top:4px">Click a row to trace it in Troubleshoot and see every layer it crossed.</div>';
+    }
+  }
+  // ---- Azure Firewall decision breakdown (Firewall Workbook style) ----
+  if(fwRows.length){
+    const fw=fwInWindow();
+    const sumHits=arr=>arr.reduce((a,r)=>a+(r.hits||1),0);
+    const cnt=rx=>sumHits(fw.filter(r=>rx.test(r.table||"")));
+    html+='<div class="secTitle" style="margin-top:18px">Azure Firewall decisions '
+      +'<span style="color:var(--faint);font-weight:400;text-transform:none;letter-spacing:0">from the firewall rule logs</span></div>';
+    html+='<div class="mcards">'
+      +mcard("Allowed",sumHits(fw.filter(r=>!fwIsDeny(r))).toLocaleString(),"permitted by a rule")
+      +mcard("Denied",sumHits(fw.filter(fwIsDeny)).toLocaleString(),"blocked by a rule or default")
+      +mcard("Network rules",cnt(/AZFWNetworkRule/i).toLocaleString(),"L3 / L4 decisions")
+      +mcard("Application rules",cnt(/AZFWApplicationRule/i).toLocaleString(),"FQDN / L7 decisions")
+      +mcard("Threat intel",cnt(/AZFWThreatIntel/i).toLocaleString(),"malicious-address blocks")
+      +mcard("IDPS",cnt(/AZFWIdpsSignature/i).toLocaleString(),"signature matches")
+      +'</div>';
+  }
+  html+='<div class="secTitle" style="margin-top:16px">Data transferred by resource</div>';''')
+
+patch("G2 Metrics: blocked-conversation rows trace into Troubleshoot",
+'''  host.querySelectorAll("[data-nav]").forEach(tr=>tr.onclick=()=>{
+    const id=tr.getAttribute("data-nav"); if(!byId.has(id))return;
+    showTab("map"); selected=id; depsRoot=id; renderAll();});
+}''',
+'''  host.querySelectorAll("[data-nav]").forEach(tr=>tr.onclick=()=>{
+    const id=tr.getAttribute("data-nav"); if(!byId.has(id))return;
+    showTab("map"); selected=id; depsRoot=id; renderAll();});
+  host.querySelectorAll("[data-trace-src]").forEach(tr=>tr.onclick=()=>{
+    const s=document.getElementById("tSrc"),d=document.getElementById("tDst"),pt=document.getElementById("tPort");
+    if(s)s.value=tr.getAttribute("data-trace-src");
+    if(d)d.value=tr.getAttribute("data-trace-dst");
+    if(pt)pt.value=tr.getAttribute("data-trace-port");
+    showTab("trouble"); if(typeof renderTrace==="function")renderTrace();});
+}''')
+
 open(SRC, "w", encoding="utf-8").write(html)
 print(f"OK — {len(applied)} patch(es) applied:")
 for a in applied:

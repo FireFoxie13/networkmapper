@@ -138,6 +138,20 @@ try:
         check("Analysis does not shrug 'not in this scan' at a denied rule",
               "is not in this scan (it may live on an NSG you cannot read)" not in ana)
 
+        # ---------- Metrics tab: actionable dashboard ----------
+        page.click("#tabMetrics"); page.wait_for_timeout(800)
+        mbody = page.inner_text("#metricsBody").lower()
+        check("Metrics lists top blocked conversations", "top blocked conversations" in mbody)
+        check("Metrics shows the Azure Firewall decision breakdown", "azure firewall decisions" in mbody)
+        traced = page.evaluate("""()=>{const tr=document.querySelector('[data-trace-src]');
+            if(!tr)return {found:false};
+            tr.dispatchEvent(new MouseEvent('click',{bubbles:true}));
+            return {found:true, onTrouble:document.getElementById('troubleView').style.display!=='none',
+              src:document.getElementById('tSrc').value,
+              verdict:(document.getElementById('tResult').innerText||'').toLowerCase().includes('network path')};}""")
+        check("Metrics: clicking a blocked conversation traces it in Troubleshoot",
+              traced.get("found") and traced.get("onTrouble") and traced.get("src") and traced.get("verdict"), traced)
+
         # ---------- Architecture tab: depth on the lane cards ----------
         page.click("#tabArch"); page.wait_for_timeout(900)
         arch = page.evaluate("""() => {const s=document.getElementById('archSvg');
