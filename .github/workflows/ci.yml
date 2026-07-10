@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Playwright + Chromium
+        run: |
+          pip install playwright
+          python3 -m playwright install --with-deps chromium
+
+      - name: Rebuild azure-net-map.html from the pristine template
+        run: |
+          cp azure-net-map.PRISTINE.html azure-net-map.html
+          python3 apply_patches.py
+          echo "Built checksum:"; md5sum azure-net-map.html
+
+      - name: run_tests.py (47 assertions)
+        run: |
+          python3 tests/build_scan.py
+          python3 tests/run_tests.py
+
+      - name: run_fix_tests.py (57 assertions)
+        run: |
+          python3 tests/build_fix_scan.py
+          python3 tests/build_fwlog_scan.py
+          python3 tests/build_hairball.py
+          python3 tests/run_fix_tests.py
+
+      - name: run_stress.py (5 assertions)
+        run: |
+          python3 tests/build_stress_scan.py
+          python3 tests/run_stress.py
