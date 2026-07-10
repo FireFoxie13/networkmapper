@@ -2406,6 +2406,152 @@ patch("P79 metrics sort by real network metrics",
 '<select id="mSort"><option value="cpu">Sort by CPU</option><option value="network">Sort by network</option><option value="disk">Sort by disk</option></select>',
 '<select id="mSort"><option value="snatport">Sort by SNAT utilization</option><option value="availability">Sort by availability</option><option value="firewallhealth">Sort by firewall health</option><option value="unhealthy">Sort by unhealthy hosts</option><option value="latency">Sort by latency</option></select>')
 
+# =================================================== CUSTOM DATE/TIME RANGE
+# The window control offers presets (30 min … 7 days). Add an absolute from → to
+# range, wired on the Map, Rules and Analysis tabs. The window is global, so a
+# custom range set on any tab applies everywhere. Filters captured flow data only;
+# it never re-queries Azure (same contract as the presets).
+
+# --- state + filtering ---
+patch("P80a custom-range state",
+'let windowMin=0;              // 0 = the whole scan window',
+'''let windowMin=0;              // 0 = the whole scan window
+let winFrom=null, winTo=null; // absolute custom range (ms); overrides windowMin when set''')
+
+patch("P80b flows honour the custom range",
+'''function flowsInWindow(){
+  if(!windowMin||!allFlowRows.length)return allFlowRows;''',
+'''function flowsInWindow(){
+  if(winFrom&&winTo)return allFlowRows.filter(f=>!f.ts||(f.ts>=winFrom&&f.ts<=winTo));
+  if(!windowMin||!allFlowRows.length)return allFlowRows;''')
+
+patch("P80c firewall logs honour the custom range",
+'''function fwInWindow(){
+  if(!windowMin||!fwRows.length)return fwRows;''',
+'''function fwInWindow(){
+  if(winFrom&&winTo)return fwRows.filter(r=>!r.ts||(r.ts>=winFrom&&r.ts<=winTo));
+  if(!windowMin||!fwRows.length)return fwRows;''')
+
+patch("P80d applyCustomWindow + rebuildForWindow",
+'''function applyWindow(min){
+  windowMin=min;
+  const base0=buildGraph(items);''',
+'''function applyWindow(min){ windowMin=min; winFrom=winTo=null; rebuildForWindow(); }
+function applyCustomWindow(from,to){ windowMin=0; winFrom=from; winTo=to; rebuildForWindow(); }
+function rebuildForWindow(){
+  const base0=buildGraph(items);''')
+
+patch("P80e windowRange reflects the custom range",
+'''function windowRange(){
+  const to=newestFlowTs();
+  if(!to)return null;''',
+'''function windowRange(){
+  if(winFrom&&winTo)return {from:winFrom,to:winTo};
+  const to=newestFlowTs();
+  if(!to)return null;''')
+
+patch("P80f windowLabel reflects the custom range",
+'  const base=windowMin?"last "+humanMins(windowMin):(flowSpanMin?"all "+humanMins(flowSpanMin):"all flows");',
+'  const base=(winFrom&&winTo)?"custom range":(windowMin?"last "+humanMins(windowMin):(flowSpanMin?"all "+humanMins(flowSpanMin):"all flows"));')
+
+# --- markup: Map toolbar ---
+patch("P80g custom-range control on the Map toolbar",
+'''      <option value="10080">Last 7 days</option>
+    </select>
+  </div>''',
+'''      <option value="10080">Last 7 days</option>
+      <option value="custom">Custom range…</option>
+    </select>
+    <span id="timeWinCustom" style="display:none;gap:5px;align-items:center">
+      <input type="datetime-local" id="timeWinFrom" style="font-size:11px;padding:3px 5px" />
+      <span style="color:var(--faint)">→</span>
+      <input type="datetime-local" id="timeWinTo" style="font-size:11px;padding:3px 5px" />
+      <button class="btn" id="timeWinApply">Apply</button>
+    </span>
+  </div>''')
+
+# --- markup: Rules toolbar ---
+patch("P80h custom-range control on the Rules toolbar",
+'''        <option value="10080">Last 7 days</option>
+      </select>
+      <select id="ruleAccess">''',
+'''        <option value="10080">Last 7 days</option>
+        <option value="custom">Custom range…</option>
+      </select>
+      <span id="ruleWinCustom" style="display:none;gap:5px;align-items:center">
+        <input type="datetime-local" id="ruleWinFrom" style="font-size:11px;padding:3px 5px" />
+        <span style="color:var(--faint)">→</span>
+        <input type="datetime-local" id="ruleWinTo" style="font-size:11px;padding:3px 5px" />
+        <button class="btn" id="ruleWinApply">Apply</button>
+      </span>
+      <select id="ruleAccess">''')
+
+# --- markup: Analysis window control (it had none) ---
+patch("P80i window control on the Analysis tab",
+'''  <div id="analysisView" style="display:none">
+    <div class="statusline" id="anaSummary"></div>''',
+'''  <div id="analysisView" style="display:none">
+    <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+      <span style="font-size:11px;color:var(--faint)">Traffic window</span>
+      <select id="anaWin" title="Filters the traffic already captured in this scan; it does not re-query Azure.">
+        <option value="0">All flows in this scan</option>
+        <option value="30">Last 30 minutes</option>
+        <option value="60">Last hour</option>
+        <option value="360">Last 6 hours</option>
+        <option value="1440">Last 24 hours</option>
+        <option value="4320">Last 3 days</option>
+        <option value="10080">Last 7 days</option>
+        <option value="custom">Custom range…</option>
+      </select>
+      <span id="anaWinCustom" style="display:none;gap:5px;align-items:center">
+        <input type="datetime-local" id="anaWinFrom" style="font-size:11px;padding:3px 5px" />
+        <span style="color:var(--faint)">→</span>
+        <input type="datetime-local" id="anaWinTo" style="font-size:11px;padding:3px 5px" />
+        <button class="btn" id="anaWinApply">Apply</button>
+      </span>
+    </div>
+    <div class="statusline" id="anaSummary"></div>''')
+
+# --- handlers: wire preset + custom on all three tabs ---
+patch("P80j wire custom-range handlers",
+'''bind("timeWin","onchange",function(){applyWindow(+this.value);syncWindowControls();});
+bind("ruleWin","onchange",function(){applyWindow(+this.value);syncWindowControls();});''',
+'''function _winToMs(v){const t=v?Date.parse(v):NaN;return isNaN(t)?null:t;}
+function _winToLocal(ms){const d=new Date(ms-new Date(ms).getTimezoneOffset()*60000);return d.toISOString().slice(0,16);}
+function wireWin(sel,customId,fromId,toId,applyId){
+  const s=document.getElementById(sel); if(!s)return;
+  s.onchange=function(){
+    const cc=document.getElementById(customId);
+    if(this.value==="custom"){
+      if(cc)cc.style.display="inline-flex";
+      const r=windowRange();
+      if(r){const f=document.getElementById(fromId),t=document.getElementById(toId);if(f)f.value=_winToLocal(r.from);if(t)t.value=_winToLocal(r.to);}
+    }else{ if(cc)cc.style.display="none"; applyWindow(+this.value); syncWindowControls(); }
+  };
+  const ab=document.getElementById(applyId);
+  if(ab)ab.onclick=function(){
+    const f=_winToMs((document.getElementById(fromId)||{}).value), t=_winToMs((document.getElementById(toId)||{}).value);
+    const info=document.getElementById("focusInfo");
+    if(f==null||t==null||f>=t){ if(info)info.textContent="Pick a valid from → to range."; return; }
+    applyCustomWindow(f,t); syncWindowControls();
+  };
+}
+wireWin("timeWin","timeWinCustom","timeWinFrom","timeWinTo","timeWinApply");
+wireWin("ruleWin","ruleWinCustom","ruleWinFrom","ruleWinTo","ruleWinApply");
+wireWin("anaWin","anaWinCustom","anaWinFrom","anaWinTo","anaWinApply");''')
+
+patch("P80k syncWindowControls keeps all three selects in step",
+'''  const a=document.getElementById("timeWin"), b=document.getElementById("ruleWin");
+  if(!a||!b)return;
+  b.value=String(windowMin||0); a.value=String(windowMin||0);''',
+'''  const a=document.getElementById("timeWin"), b=document.getElementById("ruleWin"), an=document.getElementById("anaWin");
+  if(!a||!b)return;
+  const v=(winFrom&&winTo)?"custom":String(windowMin||0);
+  a.value=v; b.value=v; if(an)an.value=v;
+  for(const cid of ["timeWinCustom","ruleWinCustom","anaWinCustom"]){
+    const cc=document.getElementById(cid); if(cc)cc.style.display=(v==="custom")?"inline-flex":"none";
+  }''')
+
 open(SRC, "w", encoding="utf-8").write(html)
 print(f"OK — {len(applied)} patch(es) applied:")
 for a in applied:

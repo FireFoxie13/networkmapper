@@ -147,7 +147,7 @@ try:
         # ---------- Rules tab: window control, timestamps, provenance ----------
         page.click("#tabRules"); page.wait_for_timeout(1500)
         check("rules tab has its own time window",
-              page.eval_on_selector_all("#ruleWin option", "e=>e.length") == 7)
+              page.eval_on_selector_all("#ruleWin option", "e=>e.length") == 8)  # 7 presets + Custom range
         check("rules header states the window it counts over",
               "Traffic counts cover" in page.eval_on_selector_all("#rulesView .statusline","e=>e.map(x=>x.textContent).join(' ')"))
         det = page.evaluate("""() => {
