@@ -52,9 +52,6 @@ p["dns"] = [
     {"name": "identity", "fqdn": "identity.dayforcenow.us.",
      "type": "Microsoft.Network/dnszones/CNAME",
      "properties": {"CNAMERecord": {"cname": "identity.dayforcenow.us.cdn.cloudflare.net."}}},
-    {"name": "rds", "fqdn": "rds.dayforcenow.us.",
-     "type": "Microsoft.Network/dnszones/A",
-     "properties": {"ARecords": [{"ipv4Address": web_ip}]}},
 ]
 
 # ---- metrics: SNAT exhaustion on the firewall, unhealthy backend on the LB ----

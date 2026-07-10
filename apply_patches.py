@@ -2305,6 +2305,64 @@ patch("P75b effective-routes section on the panel",
     }
   }''')
 
+# ================================ NODE SIZE BY VOLUME + DENY DETAIL IN TOOLTIP
+# P76a: memoise nodeTraffic (it is about to be called once per node for sizing) and
+# collect, per node, the layer/group/rule of every denied path touching it.
+patch("P76a memoise nodeTraffic and collect deny reasons",
+'''function nodeTraffic(id){
+  let out=0,inn=0,flows=0,denied=0;
+  for(const e of fullGraph.edges){
+    if(e.kind!=="traffic")continue;
+    if(e.source===id){ out+=e.bytesOut||0; inn+=e.bytesIn||0; flows+=e.total||0; if(e.denied)denied++; }
+    else if(e.target===id){ out+=e.bytesIn||0; inn+=e.bytesOut||0; flows+=e.total||0; if(e.denied)denied++; }
+  }
+  return {out,inn,flows,denied};
+}''',
+'''let _ntCache=new Map(), _ntVer=null;
+function nodeTraffic(id){
+  if(_ntVer!==fullGraph){ _ntCache=new Map(); _ntVer=fullGraph; }
+  if(_ntCache.has(id))return _ntCache.get(id);
+  let out=0,inn=0,flows=0,denied=0; const deny=[];
+  for(const e of fullGraph.edges){
+    if(e.kind!=="traffic")continue;
+    const isSrc=e.source===id, isTgt=e.target===id;
+    if(!isSrc&&!isTgt)continue;
+    if(isSrc){ out+=e.bytesOut||0; inn+=e.bytesIn||0; } else { out+=e.bytesIn||0; inn+=e.bytesOut||0; }
+    flows+=e.total||0;
+    if(e.denied){ denied++;
+      const oid=isSrc?(e.target.id||e.target):(e.source.id||e.source), o=byId&&byId.get(oid);
+      deny.push({peer:o?o.name:"?", layer:DENY_LAYER[e.blockLayer]||"unknown", group:e.blockGroup||"", rule:e.blockRule||""}); }
+  }
+  const res={out,inn,flows,denied,deny};
+  _ntCache.set(id,res); return res;
+}''')
+
+# P76b: node radius grows with observed traffic volume (Datadog-style), so a busy
+# resource reads as a bigger circle. No traffic keeps the type's base size.
+patch("P76b node size scales with traffic volume",
+'const rOf=d=>d.type==="group"?Math.max(19,Math.min(50,12+Math.sqrt(d.count)*3.1)):TYPES[d.type].r+2;',
+'''const rOf=d=>{
+  if(d.type==="group")return Math.max(19,Math.min(50,12+Math.sqrt(d.count)*3.1));
+  const base=TYPES[d.type].r+2, t=nodeTraffic(d.id), bytes=(t.out||0)+(t.inn||0);
+  return bytes>0?Math.max(base,Math.min(30,base+Math.log10(bytes)*1.9)):base;
+};''')
+
+# P76c: put the deny detail (which layer/rule blocked it) in the node hover box,
+# not only the count — so hovering a red node explains WHY it is red.
+patch("P76c deny detail in the node hover box",
+'''      if(t.denied)html+='<div class="tr bad"><span>Denied paths</span><b>'+t.denied+'</b></div>';''',
+'''      if(t.denied){
+        html+='<div class="tr bad"><span>Denied paths</span><b>'+t.denied+'</b></div>';
+        const seen=new Set();
+        for(const dn of (t.deny||[])){
+          const k=dn.layer+"|"+dn.group+"|"+dn.rule; if(seen.has(k))continue; seen.add(k);
+          html+='<div class="tr bad" style="align-items:flex-start"><span>blocked at</span>'
+              + '<b style="text-align:right;max-width:210px">'+esc(dn.layer)+(dn.group?" "+esc(dn.group):"")
+              + (dn.rule?'<br><span style="color:#FCA5A5;font-weight:400">'+esc(dn.rule)+'</span>':'')+'</b></div>';
+          if(seen.size>=3)break;
+        }
+      }''')
+
 open(SRC, "w", encoding="utf-8").write(html)
 print(f"OK — {len(applied)} patch(es) applied:")
 for a in applied:
