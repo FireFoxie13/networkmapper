@@ -2131,6 +2131,89 @@ patch("P71d2 shorten the traffic chip",
 '          <span class="chip"><i style="background:var(--edgeTraffic);height:3px"></i> observed traffic · width = volume · dots = direction</span>',
 '          <span class="chip"><i style="background:var(--edgeTraffic);height:3px"></i> observed traffic</span>')
 
+# ============================================= EXTERNAL / PUBLIC CONNECTIONS
+# Task 1 companion (HTML side). The fixed KQL now delivers public/external flows
+# with a real address plus Azure's own enrichment (service tag, country). Parse
+# those, and NAME the far end — Cloudflare (published CIDRs), the Azure service
+# tag Azure attached, or at least the country — instead of collapsing every
+# public IP into one anonymous "Internet" node. This is what lets the map answer
+# "is this resource talking to Cloudflare?".
+
+# P72a1: recover the public address when SrcIp/DestIp is blank, and add the parse
+# helpers. (Belt-and-braces with the KQL, and it makes public flows renderable
+# straight from raw NTANetAnalytics rows too.)
+patch("P72a1 public-IP fallback in the flow normalizer",
+'''    if(r&&isIp(r.src)&&isIp(r.dst)&&typeof r.port==="number")return r; // already normalized
+    return {
+      src:pick(r,["SrcIp","SrcIP","SourceIP","srcip_s","src"]),
+      dst:pick(r,["DestIp","DstIp","DestIP","destip_s","dst"]),''',
+'''    if(r&&isIp(r.src)&&isIp(r.dst)&&typeof r.port==="number")return r; // already normalized
+    // AzurePublic / ExternalPublic flows report the far end in Src/DestPublicIps, not
+    // Src/DestIp (bar-delimited, first token = IP). Azure also tags the owner and country.
+    const firstIp=s=>{const m=String(s||"").match(/([0-9A-Fa-f:.]+)/);return m&&isIp(m[1])?m[1]:"";};
+    const lastSeg=s=>{const p=String(s||"").split("|");return p.length>1?p[p.length-1].trim():"";};
+    return {
+      src:pick(r,["SrcIp","SrcIP","SourceIP","srcip_s","src"])||firstIp(pick(r,["SrcPublicIps"])),
+      dst:pick(r,["DestIp","DstIp","DestIP","destip_s","dst"])||firstIp(pick(r,["DestPublicIps"])),''')
+
+# P72a2: carry the service tag and country onto each flow for labelling.
+patch("P72a2 carry service tag / country on flows",
+'''      flowType:pick(r,["FlowType"])||"",
+      peId:pick(r,["PrivateEndpointResourceId"])||"",''',
+'''      flowType:pick(r,["FlowType"])||"",
+      srcTag:lastSeg(pick(r,["SrcServiceTags"])),
+      dstTag:lastSeg(pick(r,["DestServiceTags"])),
+      country:pick(r,["Country"])||"",
+      peId:pick(r,["PrivateEndpointResourceId"])||"",''')
+
+# P72b: the classifier + Cloudflare's published ranges.
+patch("P72b external-endpoint classifier",
+'function attachTraffic(graph,flows){',
+'''// Well-known external providers we can name from a public IP. Cloudflare publishes its
+// ranges (cloudflare.com/ips, IPv4 set). Azure service tags and per-flow Country come
+// straight from NTANetAnalytics, so they need no static list.
+const CLOUDFLARE_CIDRS=["173.245.48.0/20","103.21.244.0/22","103.22.200.0/22","103.31.4.0/22","141.101.64.0/18","108.162.192.0/18","190.93.240.0/20","188.114.96.0/20","197.234.240.0/22","198.41.128.0/17","162.158.0.0/15","104.16.0.0/13","104.24.0.0/14","172.64.0.0/13","131.0.72.0/22"];
+const COUNTRY_NAMES={US:"United States",GB:"United Kingdom",CA:"Canada",DE:"Germany",FR:"France",NL:"Netherlands",IE:"Ireland",AU:"Australia",IN:"India",SG:"Singapore",JP:"Japan",BR:"Brazil"};
+// Give an external public IP the most specific identity we can prove: a named provider
+// (Cloudflare), the Azure service tag Azure itself attached, or its country.
+function classifyExt(ip,tag,country){
+  if(CLOUDFLARE_CIDRS.some(c=>inCidr(ip,c)))
+    return {id:"extsvc|cloudflare",name:"Cloudflare",prov:"cloudflare",meta:{ip,provider:"Cloudflare (WAF / reverse proxy)"}};
+  const t=String(tag||"").trim();
+  if(t&&!/^internet$/i.test(t)){const base=t.split(".")[0];
+    return {id:"extsvc|tag:"+base,name:base,prov:"tag:"+base,meta:{ip,serviceTag:t}};}
+  const c=String(country||"").trim().toUpperCase();
+  if(c) return {id:"ext:"+ip,name:ip,prov:"",meta:{ip,country:c,countryName:COUNTRY_NAMES[c]||c}};
+  return {id:"ext:"+ip,name:ip,prov:"",meta:{ip}};
+}
+function attachTraffic(graph,flows){''')
+
+# P72c: resolve() consults the classifier for external IPs (dedupes Cloudflare's many
+# IPs to one node, service-tagged IPs to one node per service).
+patch("P72c resolve signature takes external meta",
+'''  const resolve=ip=>{
+    if(ipMap.has(ip))return ipMap.get(ip);''',
+'''  const resolve=(ip,extMeta)=>{
+    if(ipMap.has(ip))return ipMap.get(ip);''')
+
+patch("P72c2 resolve names external endpoints",
+'''    if(!extNodes.has(ip))extNodes.set(ip,{id:"ext:"+ip,type:"ext",name:ip,sub:"",meta:{ip}});
+    return "ext:"+ip;''',
+'''    const ex=classifyExt(ip,extMeta&&extMeta.tag,extMeta&&extMeta.country);
+    if(!extNodes.has(ex.id))extNodes.set(ex.id,{id:ex.id,type:"ext",name:ex.name,sub:"",prov:ex.prov,meta:ex.meta});
+    return ex.id;''')
+
+# P72d: pass each side's tag + the flow's country into resolve.
+patch("P72d flow loop passes tag/country to resolve",
+'    const a=resolve(f.src),b=resolve(f.dst); if(a===b)continue;',
+'    const a=resolve(f.src,{tag:f.srcTag,country:f.country}),b=resolve(f.dst,{tag:f.dstTag,country:f.country}); if(a===b)continue;')
+
+# P72e: named external providers stand alone as their own node; only anonymous bare
+# IPs still collapse into the single Internet bucket.
+patch("P72e named external providers are not collapsed into Internet",
+'  if(n.type==="ext")return "internet|all";           // public IPs collapse into one Internet node',
+'  if(n.type==="ext")return n.prov?null:"internet|all"; // Cloudflare / service-tagged endpoints stand alone; bare IPs collapse')
+
 open(SRC, "w", encoding="utf-8").write(html)
 print(f"OK — {len(applied)} patch(es) applied:")
 for a in applied:

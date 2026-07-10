@@ -846,9 +846,13 @@ function normalizeFlowRows(rows){
     return s||"";};
   return rows.map(r=>{
     if(r&&isIp(r.src)&&isIp(r.dst)&&typeof r.port==="number")return r; // already normalized
+    // AzurePublic / ExternalPublic flows report the far end in Src/DestPublicIps, not
+    // Src/DestIp (bar-delimited, first token = IP). Azure also tags the owner and country.
+    const firstIp=s=>{const m=String(s||"").match(/([0-9A-Fa-f:.]+)/);return m&&isIp(m[1])?m[1]:"";};
+    const lastSeg=s=>{const p=String(s||"").split("|");return p.length>1?p[p.length-1].trim():"";};
     return {
-      src:pick(r,["SrcIp","SrcIP","SourceIP","srcip_s","src"]),
-      dst:pick(r,["DestIp","DstIp","DestIP","destip_s","dst"]),
+      src:pick(r,["SrcIp","SrcIP","SourceIP","srcip_s","src"])||firstIp(pick(r,["SrcPublicIps"])),
+      dst:pick(r,["DestIp","DstIp","DestIP","destip_s","dst"])||firstIp(pick(r,["DestPublicIps"])),
       port:Number(pick(r,["DestPort","DstPort","destport_d","port"]))||0,
       proto:protoName(pick(r,["L4Protocol","Protocol","proto","protocol"])),
       status:pick(r,["FlowStatus","status"])||"",
@@ -858,10 +862,30 @@ function normalizeFlowRows(rows){
       aclRule:pick(r,["AclRule","NsgRule","NSGRule_s"])||"",
       aclGroup:pick(r,["AclGroup","NsgList","NSGList_s"])||"",
       flowType:pick(r,["FlowType"])||"",
+      srcTag:lastSeg(pick(r,["SrcServiceTags"])),
+      dstTag:lastSeg(pick(r,["DestServiceTags"])),
+      country:pick(r,["Country"])||"",
       peId:pick(r,["PrivateEndpointResourceId"])||"",
       ts:(()=>{const v=pick(r,["Bucket","TimeGenerated","bucket"]); const t=v?Date.parse(v):NaN; return isNaN(t)?null:t;})(),
     };
   }).filter(f=>isIp(f.src)&&isIp(f.dst));
+}
+// Well-known external providers we can name from a public IP. Cloudflare publishes its
+// ranges (cloudflare.com/ips, IPv4 set). Azure service tags and per-flow Country come
+// straight from NTANetAnalytics, so they need no static list.
+const CLOUDFLARE_CIDRS=["173.245.48.0/20","103.21.244.0/22","103.22.200.0/22","103.31.4.0/22","141.101.64.0/18","108.162.192.0/18","190.93.240.0/20","188.114.96.0/20","197.234.240.0/22","198.41.128.0/17","162.158.0.0/15","104.16.0.0/13","104.24.0.0/14","172.64.0.0/13","131.0.72.0/22"];
+const COUNTRY_NAMES={US:"United States",GB:"United Kingdom",CA:"Canada",DE:"Germany",FR:"France",NL:"Netherlands",IE:"Ireland",AU:"Australia",IN:"India",SG:"Singapore",JP:"Japan",BR:"Brazil"};
+// Give an external public IP the most specific identity we can prove: a named provider
+// (Cloudflare), the Azure service tag Azure itself attached, or its country.
+function classifyExt(ip,tag,country){
+  if(CLOUDFLARE_CIDRS.some(c=>inCidr(ip,c)))
+    return {id:"extsvc|cloudflare",name:"Cloudflare",prov:"cloudflare",meta:{ip,provider:"Cloudflare (WAF / reverse proxy)"}};
+  const t=String(tag||"").trim();
+  if(t&&!/^internet$/i.test(t)){const base=t.split(".")[0];
+    return {id:"extsvc|tag:"+base,name:base,prov:"tag:"+base,meta:{ip,serviceTag:t}};}
+  const c=String(country||"").trim().toUpperCase();
+  if(c) return {id:"ext:"+ip,name:ip,prov:"",meta:{ip,country:c,countryName:COUNTRY_NAMES[c]||c}};
+  return {id:"ext:"+ip,name:ip,prov:"",meta:{ip}};
 }
 function attachTraffic(graph,flows){
   const ipMap=new Map();
@@ -874,7 +898,7 @@ function attachTraffic(graph,flows){
   const extNodes=new Map();
   const vnets=graph.nodes.filter(n=>n.type==="vnet"&&n.meta.prefixes);
   const vnetContaining=ip=>vnets.find(v=>String(v.meta.prefixes).split(",").some(c=>inCidr(ip,c.trim())));
-  const resolve=ip=>{
+  const resolve=(ip,extMeta)=>{
     if(ipMap.has(ip))return ipMap.get(ip);
     const sn=subnets.find(s=>s.meta.prefix.split(",").some(c=>inCidr(ip,c.trim())));
     if(sn)return sn.id;
@@ -898,13 +922,14 @@ function attachTraffic(graph,flows){
       }
       return key;
     }
-    if(!extNodes.has(ip))extNodes.set(ip,{id:"ext:"+ip,type:"ext",name:ip,sub:"",meta:{ip}});
-    return "ext:"+ip;
+    const ex=classifyExt(ip,extMeta&&extMeta.tag,extMeta&&extMeta.country);
+    if(!extNodes.has(ex.id))extNodes.set(ex.id,{id:ex.id,type:"ext",name:ex.name,sub:"",prov:ex.prov,meta:ex.meta});
+    return ex.id;
   };
   const agg=new Map();
   for(const f of flows){
     if(!isIp(f.src)||!isIp(f.dst))continue;
-    const a=resolve(f.src),b=resolve(f.dst); if(a===b)continue;
+    const a=resolve(f.src,{tag:f.srcTag,country:f.country}),b=resolve(f.dst,{tag:f.dstTag,country:f.country}); if(a===b)continue;
     const key=a+"|"+b;
     if(!agg.has(key))agg.set(key,{source:a,target:b,kind:"traffic",rows:new Map(),denied:false});
     const e=agg.get(key);
@@ -1520,7 +1545,7 @@ function computeVnetOf(){
 
 function groupKeyOf(n){
   if(groupBy==="none")return null;
-  if(n.type==="ext")return "internet|all";           // public IPs collapse into one Internet node
+  if(n.type==="ext")return n.prov?null:"internet|all"; // Cloudflare / service-tagged endpoints stand alone; bare IPs collapse
   if(n.type==="privunknown")return "privnet|all";    // unmapped private IPs are a separate bucket
   if(["host","cfe","site"].includes(n.type))return null;
   if(groupBy==="subscription")return n.subId?"sub|"+n.subId:null;

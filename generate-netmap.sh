@@ -118,31 +118,53 @@ if [ -n "${WORKSPACE_ID:-}" ]; then
   # then bucket only those, so the payload stays bounded no matter how long the window
   # is — without ever discarding denied traffic, which is the whole point.
   FW="${FLOW_WINDOW:-24h}"
+  # NTANetAnalytics leaves SrcIp/DestIp BLANK for AzurePublic and ExternalPublic flows
+  # (documented behaviour: the address is public, so it is reported in Src/DestPublicIps
+  # instead, bar-delimited as "<IP> | started | ended | outPkts | inPkts | outBytes | inBytes").
+  # The old query grouped on the blank IP, so every public/external flow — inbound Cloudflare
+  # WAF, egress to SaaS, Azure service traffic: ~89% of bytes here — collapsed to one empty
+  # row and the mapper dropped it. Recover the real address into SrcIp/DestIp, and carry the
+  # Azure-provided enrichment (service tag, country, region, L7) so the map can NAME the far
+  # end (e.g. "Cloudflare", "Storage.centralus") instead of a bare IP.
   KQL="let W = ${FW};
-let denied = NTANetAnalytics
-| where TimeGenerated > ago(W) and SubType == 'FlowLog' and FlowStatus == 'Denied'
+let base = NTANetAnalytics
+| where TimeGenerated > ago(W) and SubType == 'FlowLog'
+| extend SrcIp  = iif(isempty(SrcIp),  extract(@'^\s*([0-9A-Fa-f:.]+)', 1, tostring(SrcPublicIps)),  SrcIp)
+| extend DestIp = iif(isempty(DestIp), extract(@'^\s*([0-9A-Fa-f:.]+)', 1, tostring(DestPublicIps)), DestIp)
+| where isnotempty(SrcIp) and isnotempty(DestIp);
+let denied = base
+| where FlowStatus == 'Denied'
 | summarize F = count() by SrcIp, DestIp, DestPort, L4Protocol, FlowStatus
 | top 3000 by F
 | project SrcIp, DestIp, DestPort, L4Protocol, FlowStatus;
-let allowed = NTANetAnalytics
-| where TimeGenerated > ago(W) and SubType == 'FlowLog' and FlowStatus != 'Denied'
+let allowed = base
+| where FlowStatus != 'Denied'
 | summarize F = count() by SrcIp, DestIp, DestPort, L4Protocol, FlowStatus
 | top 2000 by F
 | project SrcIp, DestIp, DestPort, L4Protocol, FlowStatus;
 // Denied flows are rare next to allowed ones, so a plain top-by-count would drop them
 // entirely. Select them separately and always keep them.
 let busiest = union denied, allowed;
-NTANetAnalytics
-| where TimeGenerated > ago(W) and SubType == 'FlowLog'
+base
 | join kind=inner busiest on SrcIp, DestIp, DestPort, L4Protocol, FlowStatus
 | summarize Flows = count(),
             BytesSrcToDest = sum(BytesSrcToDest),
-            BytesDestToSrc = sum(BytesDestToSrc)
+            BytesDestToSrc = sum(BytesDestToSrc),
+            SrcServiceTags = take_any(SrcServiceTags),
+            DestServiceTags = take_any(DestServiceTags),
+            Country = take_any(Country),
+            AzureRegion = take_any(AzureRegion),
+            L7Protocol = take_any(L7Protocol)
     by Bucket = bin(TimeGenerated, 30m), SrcIp, DestIp, DestPort, L4Protocol, FlowStatus,
-       AclRule, AclGroup, FlowType, PrivateEndpointResourceId, FlowDirection
+       AclRule, AclGroup, FlowType, PrivateEndpointResourceId
 | summarize Flows = max(Flows),
             BytesSrcToDest = max(BytesSrcToDest),
-            BytesDestToSrc = max(BytesDestToSrc)
+            BytesDestToSrc = max(BytesDestToSrc),
+            SrcServiceTags = take_any(SrcServiceTags),
+            DestServiceTags = take_any(DestServiceTags),
+            Country = take_any(Country),
+            AzureRegion = take_any(AzureRegion),
+            L7Protocol = take_any(L7Protocol)
     by Bucket, SrcIp, DestIp, DestPort, L4Protocol, FlowStatus,
        AclRule, AclGroup, FlowType, PrivateEndpointResourceId
 | top 20000 by Flows"
